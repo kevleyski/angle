@@ -23,26 +23,33 @@
 
 #include "tcuRandomOrderExecutor.h"
 
+#include "deClock.h"
+#include "deStringUtil.hpp"
 #include "tcuCommandLine.hpp"
 #include "tcuTestLog.hpp"
-#include "deStringUtil.hpp"
-#include "deClock.h"
 
-#include <cstdio>
 #include <algorithm>
+#include <cstdio>
 #include <fstream>
 
-using std::vector;
 using std::string;
+using std::vector;
 
 namespace tcu
 {
 
-RandomOrderExecutor::RandomOrderExecutor(TestPackageRoot &root, TestContext &testCtx)
+RandomOrderExecutor::RandomOrderExecutor(TestPackageRoot &root,
+                                         TestContext &testCtx,
+                                         bool enableRenderDocCapture)
     : m_testCtx(testCtx), m_inflater(testCtx)
 {
     m_nodeStack.push_back(NodeStackEntry(&root));
     root.getChildren(m_nodeStack[0].children);
+
+    if (enableRenderDocCapture)
+    {
+        mRenderDoc.attach();
+    }
 }
 
 RandomOrderExecutor::~RandomOrderExecutor(void)
@@ -58,7 +65,7 @@ void RandomOrderExecutor::pruneStack(size_t newStackSize)
     while (m_nodeStack.size() > newStackSize)
     {
         NodeStackEntry &curEntry = m_nodeStack.back();
-        const bool isPkg = curEntry.node->getNodeType() == NODETYPE_PACKAGE;
+        const bool isPkg         = curEntry.node->getNodeType() == NODETYPE_PACKAGE;
 
         DE_ASSERT((m_nodeStack.size() == 2) == isPkg);
 
@@ -73,7 +80,7 @@ void RandomOrderExecutor::pruneStack(size_t newStackSize)
             else
                 DE_ASSERT(curEntry.children.empty());
 
-            curEntry.node = DE_NULL;
+            curEntry.node = nullptr;
             curEntry.children.clear();
         }
 
@@ -92,7 +99,7 @@ static TestNode *findNodeByName(vector<TestNode *> &nodes, const std::string &na
             return *node;
     }
 
-    return DE_NULL;
+    return nullptr;
 }
 
 TestCase *RandomOrderExecutor::seekToCase(const string &path)
@@ -172,8 +179,8 @@ static qpTestCaseType nodeTypeToTestCaseType(TestNodeType nodeType)
 
 TestStatus RandomOrderExecutor::execute(const std::string &casePath)
 {
-    TestCase *const testCase = seekToCase(casePath);
-    TestLog &log = m_testCtx.getLog();
+    TestCase *const testCase      = seekToCase(casePath);
+    TestLog &log                  = m_testCtx.getLog();
     const qpTestCaseType caseType = nodeTypeToTestCaseType(testCase->getNodeType());
 
     m_testCtx.setTerminateAfter(false);
@@ -188,14 +195,15 @@ TestStatus RandomOrderExecutor::execute(const std::string &casePath)
 
 tcu::TestStatus RandomOrderExecutor::executeInner(TestCase *testCase, const std::string &casePath)
 {
-    TestLog &log = m_testCtx.getLog();
-    const deUint64 testStartTime = deGetMicroseconds();
+    TestLog &log                 = m_testCtx.getLog();
+    const uint64_t testStartTime = deGetMicroseconds();
 
     m_testCtx.setTestResult(QP_TEST_RESULT_LAST, "");
 
     // Initialize, will return immediately if fails
     try
     {
+        mRenderDoc.startFrame();
         m_caseExecutor->init(testCase, casePath);
     }
     catch (const std::bad_alloc &)
@@ -217,6 +225,8 @@ tcu::TestStatus RandomOrderExecutor::executeInner(TestCase *testCase, const std:
         return TestStatus(QP_TEST_RESULT_FAIL, e.getMessage());
     }
 
+    bool isFirstFrameBeingCaptured = true;
+
     // Execute
     for (;;)
     {
@@ -226,6 +236,15 @@ tcu::TestStatus RandomOrderExecutor::executeInner(TestCase *testCase, const std:
 
         try
         {
+            // Make every iteration produce one renderdoc frame.  Include the init code in the first
+            // frame, and the deinit code in the last frame.
+            if (!isFirstFrameBeingCaptured)
+            {
+                mRenderDoc.endFrame();
+                mRenderDoc.startFrame();
+            }
+            isFirstFrameBeingCaptured = false;
+
             iterateResult = m_caseExecutor->iterate(testCase);
         }
         catch (const std::bad_alloc &)
@@ -259,11 +278,13 @@ tcu::TestStatus RandomOrderExecutor::executeInner(TestCase *testCase, const std:
     try
     {
         m_caseExecutor->deinit(testCase);
+        mRenderDoc.endFrame();
     }
     catch (const tcu::Exception &e)
     {
-        log << e << TestLog::Message << "Error in test case deinit, test program "
-                                        "will terminate."
+        log << e << TestLog::Message
+            << "Error in test case deinit, test program "
+               "will terminate."
             << TestLog::EndMessage;
         m_testCtx.setTerminateAfter(true);
     }
@@ -279,4 +300,4 @@ tcu::TestStatus RandomOrderExecutor::executeInner(TestCase *testCase, const std:
     }
 }
 
-}  // tcu
+}  // namespace tcu

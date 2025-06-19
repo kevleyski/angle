@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2015 The ANGLE Project Authors. All rights reserved.
+// Copyright 2015 The ANGLE Project Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
@@ -9,7 +9,10 @@
 #ifndef LIBANGLE_VALIDATIONEGL_H_
 #define LIBANGLE_VALIDATIONEGL_H_
 
+#include "common/PackedEnums.h"
+#include "libANGLE/Display.h"
 #include "libANGLE/Error.h"
+#include "libANGLE/Thread.h"
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -21,6 +24,8 @@ class Context;
 
 namespace egl
 {
+constexpr EGLint kEglMajorVersion = 1;
+constexpr EGLint kEglMinorVersion = 5;
 
 class AttributeMap;
 struct ClientExtensions;
@@ -30,149 +35,196 @@ class Display;
 class Image;
 class Stream;
 class Surface;
+class Sync;
+class Thread;
+class LabeledObject;
+
+struct ValidationContext
+{
+    ValidationContext(Thread *threadIn, const char *entryPointIn, const LabeledObject *objectIn)
+        : eglThread(threadIn), entryPoint(entryPointIn), labeledObject(objectIn)
+    {}
+
+    // We should remove the message-less overload once we have messages for all EGL errors.
+    void setError(EGLint error) const;
+    ANGLE_FORMAT_PRINTF(3, 4)
+    void setError(EGLint error, const char *message...) const;
+
+    Thread *eglThread;
+    const char *entryPoint;
+    const LabeledObject *labeledObject;
+};
 
 // Object validation
-Error ValidateDisplay(const Display *display);
-Error ValidateSurface(const Display *display, const Surface *surface);
-Error ValidateConfig(const Display *display, const Config *config);
-Error ValidateContext(const Display *display, const gl::Context *context);
-Error ValidateImage(const Display *display, const Image *image);
+bool ValidateDisplay(const ValidationContext *val, const Display *display);
+bool ValidateSurface(const ValidationContext *val, const Display *display, SurfaceID surfaceID);
+bool ValidateConfig(const ValidationContext *val, const Display *display, const Config *config);
+bool ValidateContext(const ValidationContext *val, const Display *display, gl::ContextID contextID);
+bool ValidateImage(const ValidationContext *val, const Display *display, ImageID imageID);
+bool ValidateDevice(const ValidationContext *val, const Device *device);
+bool ValidateSync(const ValidationContext *val, const Display *display, SyncID sync);
 
-// Entry point validation
-Error ValidateCreateContext(Display *display, Config *configuration, gl::Context *shareContext,
-                            const AttributeMap& attributes);
+// Return the requested object only if it is valid (otherwise nullptr)
+const Thread *GetThreadIfValid(const Thread *thread);
+const Display *GetDisplayIfValid(const Display *display);
+const Surface *GetSurfaceIfValid(const Display *display, SurfaceID surfaceID);
+const Image *GetImageIfValid(const Display *display, ImageID imageID);
+const Stream *GetStreamIfValid(const Display *display, const Stream *stream);
+const gl::Context *GetContextIfValid(const Display *display, gl::ContextID contextID);
+gl::Context *GetContextIfValid(Display *display, gl::ContextID contextID);
+const Device *GetDeviceIfValid(const Device *device);
+const Sync *GetSyncIfValid(const Display *display, SyncID sync);
+const LabeledObject *GetLabeledObjectIfValid(Thread *thread,
+                                             const Display *display,
+                                             ObjectType objectType,
+                                             EGLObjectKHR object);
+LabeledObject *GetLabeledObjectIfValid(Thread *thread,
+                                       Display *display,
+                                       ObjectType objectType,
+                                       EGLObjectKHR object);
 
-Error ValidateCreateWindowSurface(Display *display, Config *config, EGLNativeWindowType window,
-                                  const AttributeMap& attributes);
+// A template struct for determining the default value to return for each entry point.
+template <angle::EntryPoint EP, typename ReturnType>
+struct DefaultReturnValue
+{
+    static constexpr ReturnType kValue = static_cast<ReturnType>(0);
+};
 
-Error ValidateCreatePbufferSurface(Display *display, Config *config, const AttributeMap& attributes);
-Error ValidateCreatePbufferFromClientBuffer(Display *display, EGLenum buftype, EGLClientBuffer buffer,
-                                            Config *config, const AttributeMap& attributes);
+template <angle::EntryPoint EP, typename ReturnType>
+ReturnType GetDefaultReturnValue(Thread *thread);
 
-Error ValidateMakeCurrent(Display *display, EGLSurface draw, EGLSurface read, gl::Context *context);
+template <>
+ANGLE_INLINE EGLint
+GetDefaultReturnValue<angle::EntryPoint::EGLLabelObjectKHR, EGLint>(Thread *thread)
+{
+    return thread->getError();
+}
 
-Error ValidateCreateImageKHR(const Display *display,
-                             gl::Context *context,
-                             EGLenum target,
-                             EGLClientBuffer buffer,
-                             const AttributeMap &attributes);
-Error ValidateDestroyImageKHR(const Display *display, const Image *image);
+template <>
+ANGLE_INLINE EGLint
+GetDefaultReturnValue<angle::EntryPoint::EGLDupNativeFenceFDANDROID, EGLint>(Thread *thread)
+{
+    return EGL_NO_NATIVE_FENCE_FD_ANDROID;
+}
 
-Error ValidateCreateDeviceANGLE(EGLint device_type,
-                                void *native_device,
-                                const EGLAttrib *attrib_list);
-Error ValidateReleaseDeviceANGLE(Device *device);
+template <angle::EntryPoint EP, typename ReturnType>
+ANGLE_INLINE ReturnType GetDefaultReturnValue(Thread *thread)
+{
+    return DefaultReturnValue<EP, ReturnType>::kValue;
+}
 
-Error ValidateCreateStreamKHR(const Display *display, const AttributeMap &attributes);
-Error ValidateDestroyStreamKHR(const Display *display, const Stream *stream);
-Error ValidateStreamAttribKHR(const Display *display,
-                              const Stream *stream,
-                              EGLint attribute,
-                              EGLint value);
-Error ValidateQueryStreamKHR(const Display *display,
-                             const Stream *stream,
-                             EGLenum attribute,
-                             EGLint *value);
-Error ValidateQueryStreamu64KHR(const Display *display,
-                                const Stream *stream,
-                                EGLenum attribute,
-                                EGLuint64KHR *value);
-Error ValidateStreamConsumerGLTextureExternalKHR(const Display *display,
-                                                 gl::Context *context,
-                                                 const Stream *stream);
-Error ValidateStreamConsumerAcquireKHR(const Display *display,
-                                       gl::Context *context,
-                                       const Stream *stream);
-Error ValidateStreamConsumerReleaseKHR(const Display *display,
-                                       gl::Context *context,
-                                       const Stream *stream);
-Error ValidateStreamConsumerGLTextureExternalAttribsNV(const Display *display,
-                                                       gl::Context *context,
-                                                       const Stream *stream,
-                                                       const AttributeMap &attribs);
-Error ValidateCreateStreamProducerD3DTextureNV12ANGLE(const Display *display,
-                                                      const Stream *stream,
-                                                      const AttributeMap &attribs);
-Error ValidateStreamPostD3DTextureNV12ANGLE(const Display *display,
-                                            const Stream *stream,
-                                            void *texture,
-                                            const AttributeMap &attribs);
+// First case: handling packed enums.
+template <typename PackedT, typename FromT>
+typename std::enable_if<std::is_enum<PackedT>::value, PackedT>::type PackParam(FromT from)
+{
+    return FromEGLenum<PackedT>(from);
+}
 
-Error ValidateGetSyncValuesCHROMIUM(const Display *display,
-                                    const Surface *surface,
-                                    const EGLuint64KHR *ust,
-                                    const EGLuint64KHR *msc,
-                                    const EGLuint64KHR *sbc);
+// Second case: handling resource ids.
+template <typename PackedT,
+          typename FromT,
+          typename std::enable_if<IsResourceIDType<PackedT>::value>::type * = nullptr>
+PackedT PackParam(FromT from)
+{
+    return {static_cast<GLuint>(reinterpret_cast<uintptr_t>(from))};
+}
 
-Error ValidateSwapBuffersWithDamageEXT(const Display *display,
-                                       const Surface *surface,
-                                       EGLint *rects,
-                                       EGLint n_rects);
+// This and the next 2 template specializations handle distinguishing between EGLint, EGLAttrib
+// and other. This is needed because on some architectures EGLint and EGLAttrib are not the same
+// base type. Previously the code conditionally compiled 2 specializations on 64 bit but it turns
+// out on WatchOS the assumption about 32/64 bit and if EGLint and ELGAttrib are the same or
+// different did not hold.
+template <typename PackedT,
+          typename FromT,
+          typename std::enable_if<!std::is_enum<PackedT>::value>::type              * = nullptr,
+          typename std::enable_if<std::is_same<FromT, const EGLint *>::value>::type * = nullptr>
+typename std::remove_reference<PackedT>::type PackParam(FromT attribs)
+{
+    return AttributeMap::CreateFromIntArray(attribs);
+}
 
-Error ValidateGetConfigAttrib(const Display *display, const Config *config, EGLint attribute);
-Error ValidateChooseConfig(const Display *display,
-                           const AttributeMap &attribs,
-                           EGLint configSize,
-                           EGLint *numConfig);
-Error ValidateGetConfigs(const Display *display, EGLint configSize, EGLint *numConfig);
+template <typename PackedT,
+          typename FromT,
+          typename std::enable_if<!std::is_enum<PackedT>::value>::type                 * = nullptr,
+          typename std::enable_if<!std::is_same<FromT, const EGLint *>::value>::type   * = nullptr,
+          typename std::enable_if<std::is_same<FromT, const EGLAttrib *>::value>::type * = nullptr>
+typename std::remove_reference<PackedT>::type PackParam(FromT attribs)
+{
+    return AttributeMap::CreateFromAttribArray(attribs);
+}
 
-// Other validation
-Error ValidateCompatibleConfigs(const Display *display,
-                                const Config *config1,
-                                const Surface *surface,
-                                const Config *config2,
-                                EGLint surfaceType);
-
-Error ValidateGetPlatformDisplay(EGLenum platform,
-                                 void *native_display,
-                                 const EGLAttrib *attrib_list);
-Error ValidateGetPlatformDisplayEXT(EGLenum platform,
-                                    void *native_display,
-                                    const EGLint *attrib_list);
-
-Error ValidateProgramCacheGetAttribANGLE(const Display *display, EGLenum attrib);
-
-Error ValidateProgramCacheQueryANGLE(const Display *display,
-                                     EGLint index,
-                                     void *key,
-                                     EGLint *keysize,
-                                     void *binary,
-                                     EGLint *binarysize);
-
-Error ValidateProgramCachePopulateANGLE(const Display *display,
-                                        const void *key,
-                                        EGLint keysize,
-                                        const void *binary,
-                                        EGLint binarysize);
-
-Error ValidateProgramCacheResizeANGLE(const Display *display, EGLint limit, EGLenum mode);
-
-Error ValidateSurfaceAttrib(const Display *display,
-                            const Surface *surface,
-                            EGLint attribute,
-                            EGLint value);
-Error ValidateQuerySurface(const Display *display,
-                           const Surface *surface,
-                           EGLint attribute,
-                           EGLint *value);
+template <typename PackedT,
+          typename FromT,
+          typename std::enable_if<!std::is_enum<PackedT>::value>::type                  * = nullptr,
+          typename std::enable_if<!std::is_same<FromT, const EGLint *>::value>::type    * = nullptr,
+          typename std::enable_if<!std::is_same<FromT, const EGLAttrib *>::value>::type * = nullptr,
+          typename std::enable_if<!IsResourceIDType<PackedT>::value>::type              * = nullptr>
+typename std::remove_reference<PackedT>::type PackParam(FromT from)
+{
+    return static_cast<PackedT>(from);
+}
 
 }  // namespace egl
 
-#define ANGLE_EGL_TRY(THREAD, EXPR)                   \
-    {                                                 \
-        auto ANGLE_LOCAL_VAR = (EXPR);                \
-        if (ANGLE_LOCAL_VAR.isError())                \
-            return THREAD->setError(ANGLE_LOCAL_VAR); \
-    }
+#define ANGLE_EGL_VALIDATE(THREAD, EP, OBJ, RETURN_TYPE, ...)                              \
+    do                                                                                     \
+    {                                                                                      \
+        const char *epname = "egl" #EP;                                                    \
+        ValidationContext vctx(THREAD, epname, OBJ);                                       \
+        auto ANGLE_LOCAL_VAR = (Validate##EP(&vctx, ##__VA_ARGS__));                       \
+        if (!ANGLE_LOCAL_VAR)                                                              \
+        {                                                                                  \
+            return GetDefaultReturnValue<angle::EntryPoint::EGL##EP, RETURN_TYPE>(THREAD); \
+        }                                                                                  \
+    } while (0)
 
-#define ANGLE_EGL_TRY_RETURN(THREAD, EXPR, RETVAL) \
-    {                                              \
-        auto ANGLE_LOCAL_VAR = (EXPR);             \
-        if (ANGLE_LOCAL_VAR.isError())             \
-        {                                          \
-            THREAD->setError(ANGLE_LOCAL_VAR);     \
-            return RETVAL;                         \
-        }                                          \
-    }
+#define ANGLE_EGL_VALIDATE_VOID(THREAD, EP, OBJ, ...)                \
+    do                                                               \
+    {                                                                \
+        const char *epname = "egl" #EP;                              \
+        ValidationContext vctx(THREAD, epname, OBJ);                 \
+        auto ANGLE_LOCAL_VAR = (Validate##EP(&vctx, ##__VA_ARGS__)); \
+        if (!ANGLE_LOCAL_VAR)                                        \
+        {                                                            \
+            return;                                                  \
+        }                                                            \
+    } while (0)
 
-#endif // LIBANGLE_VALIDATIONEGL_H_
+#define ANGLE_EGL_TRY(THREAD, EXPR, FUNCNAME, LABELOBJECT)                   \
+    do                                                                       \
+    {                                                                        \
+        auto ANGLE_LOCAL_VAR = (EXPR);                                       \
+        if (ANGLE_LOCAL_VAR.isError())                                       \
+            return THREAD->setError(ANGLE_LOCAL_VAR, FUNCNAME, LABELOBJECT); \
+    } while (0)
+
+#define ANGLE_EGL_TRY_RETURN(THREAD, EXPR, FUNCNAME, LABELOBJECT, RETVAL) \
+    do                                                                    \
+    {                                                                     \
+        auto ANGLE_LOCAL_VAR = (EXPR);                                    \
+        if (ANGLE_LOCAL_VAR.isError())                                    \
+        {                                                                 \
+            THREAD->setError(ANGLE_LOCAL_VAR, FUNCNAME, LABELOBJECT);     \
+            return RETVAL;                                                \
+        }                                                                 \
+    } while (0)
+
+#if ANGLE_USE_DISPLAY_PREPARE_FOR_CALL
+#    define ANGLE_EGL_TRY_PREPARE_FOR_CALL_RETURN ANGLE_EGL_TRY_RETURN
+#    define ANGLE_EGL_TRY_PREPARE_FOR_CALL ANGLE_EGL_TRY
+#else
+#    define ANGLE_EGL_TRY_PREPARE_FOR_CALL_RETURN(...)
+#    define ANGLE_EGL_TRY_PREPARE_FOR_CALL(...)
+#endif
+
+#define ANGLE_EGLBOOLEAN_TRY(EXPR)           \
+    do                                       \
+    {                                        \
+        EGLBoolean ANGLE_LOCAL_VAR = (EXPR); \
+        if (ANGLE_LOCAL_VAR != EGL_TRUE)     \
+        {                                    \
+            return ANGLE_LOCAL_VAR;          \
+        }                                    \
+    } while (0)
+
+#endif  // LIBANGLE_VALIDATIONEGL_H_

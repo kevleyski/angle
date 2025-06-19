@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2002-2013 The ANGLE Project Authors. All rights reserved.
+// Copyright 2002 The ANGLE Project Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
@@ -15,6 +15,11 @@
 #include <vector>
 #include "angle_gl.h"
 
+#if defined(ANGLE_ENABLE_VULKAN)
+// SPIR-V tools include for disassembly.
+#    include <spirv-tools/libspirv.hpp>
+#endif
+
 //
 // Return codes from main.
 //
@@ -28,7 +33,7 @@ enum TFailCode
 
 static void usage();
 static sh::GLenum FindShaderType(const char *fileName);
-static bool CompileFile(char *fileName, ShHandle compiler, ShCompileOptions compileOptions);
+static bool CompileFile(char *fileName, ShHandle compiler, const ShCompileOptions &compileOptions);
 static void LogMsg(const char *msg, const char *name, const int num, const char *logName);
 static void PrintVariable(const std::string &prefix, size_t index, const sh::ShaderVariable &var);
 static void PrintActiveVariables(ShHandle compiler);
@@ -44,6 +49,8 @@ static void FreeShaderSource(ShaderSource &source);
 static bool ParseGLSLOutputVersion(const std::string &, ShShaderOutput *outResult);
 static bool ParseIntValue(const std::string &, int emptyDefault, int *outValue);
 
+static void PrintSpirv(const sh::BinaryBlob &blob);
+
 //
 // Set up the per compile resources
 //
@@ -51,38 +58,44 @@ void GenerateResources(ShBuiltInResources *resources)
 {
     sh::InitBuiltInResources(resources);
 
-    resources->MaxVertexAttribs = 8;
-    resources->MaxVertexUniformVectors = 128;
-    resources->MaxVaryingVectors = 8;
-    resources->MaxVertexTextureImageUnits = 0;
+    resources->MaxVertexAttribs             = 8;
+    resources->MaxVertexUniformVectors      = 128;
+    resources->MaxVaryingVectors            = 8;
+    resources->MaxVertexTextureImageUnits   = 0;
     resources->MaxCombinedTextureImageUnits = 8;
-    resources->MaxTextureImageUnits = 8;
-    resources->MaxFragmentUniformVectors = 16;
-    resources->MaxDrawBuffers = 1;
+    resources->MaxTextureImageUnits         = 8;
+    resources->MaxFragmentUniformVectors    = 16;
+    resources->MaxDrawBuffers               = 1;
     resources->MaxDualSourceDrawBuffers     = 1;
 
-    resources->OES_standard_derivatives = 0;
-    resources->OES_EGL_image_external = 0;
-    resources->OES_geometry_shader      = 1;
+    resources->OES_standard_derivatives  = 0;
+    resources->OES_EGL_image_external    = 0;
+    resources->EXT_geometry_shader       = 1;
+    resources->ANGLE_texture_multisample = 0;
+    resources->APPLE_clip_distance       = 0;
 }
 
 int main(int argc, char *argv[])
 {
     TFailCode failCode = ESuccess;
 
-    ShCompileOptions compileOptions = 0;
-    int numCompiles = 0;
-    ShHandle vertexCompiler = 0;
-    ShHandle fragmentCompiler = 0;
-    ShHandle computeCompiler  = 0;
+    ShCompileOptions compileOptions = {};
+    int numCompiles                 = 0;
+    ShHandle vertexCompiler         = 0;
+    ShHandle fragmentCompiler       = 0;
+    ShHandle computeCompiler        = 0;
     ShHandle geometryCompiler       = 0;
-    ShShaderSpec spec = SH_GLES2_SPEC;
-    ShShaderOutput output = SH_ESSL_OUTPUT;
+    ShHandle tessEvalCompiler       = 0;
+    ShHandle tessControlCompiler    = 0;
+    ShShaderSpec spec               = SH_GLES2_SPEC;
+    ShShaderOutput output           = SH_ESSL_OUTPUT;
 
     sh::Initialize();
 
     ShBuiltInResources resources;
     GenerateResources(&resources);
+
+    bool printActiveVariables = false;
 
     argc--;
     argv++;
@@ -92,99 +105,115 @@ int main(int argc, char *argv[])
         {
             switch (argv[0][1])
             {
-              case 'i': compileOptions |= SH_INTERMEDIATE_TREE; break;
-              case 'o': compileOptions |= SH_OBJECT_CODE; break;
-              case 'u': compileOptions |= SH_VARIABLES; break;
-              case 'p': resources.WEBGL_debug_shader_precision = 1; break;
-              case 's':
-                if (argv[0][2] == '=')
-                {
-                    switch (argv[0][3])
+                case 'i':
+                    compileOptions.intermediateTree = true;
+                    break;
+                case 'o':
+                    compileOptions.objectCode = true;
+                    break;
+                case 'u':
+                    printActiveVariables = true;
+                    break;
+                case 's':
+                    if (argv[0][2] == '=')
                     {
-                        case 'e':
-                            if (argv[0][4] == '3')
-                            {
-                                if (argv[0][5] == '1')
+                        switch (argv[0][3])
+                        {
+                            case 'e':
+                                if (argv[0][4] == '3')
                                 {
-                                    spec = SH_GLES3_1_SPEC;
+                                    if (argv[0][5] == '1')
+                                    {
+                                        spec = SH_GLES3_1_SPEC;
+                                    }
+                                    else if (argv[0][5] == '2')
+                                    {
+                                        spec = SH_GLES3_2_SPEC;
+                                    }
+                                    else
+                                    {
+                                        spec = SH_GLES3_SPEC;
+                                    }
                                 }
                                 else
                                 {
-                                    spec = SH_GLES3_SPEC;
+                                    spec = SH_GLES2_SPEC;
                                 }
-                            }
-                            else
-                            {
-                                spec = SH_GLES2_SPEC;
-                            }
-                            break;
-                        case 'w':
-                            if (argv[0][4] == '3')
-                            {
-                                spec = SH_WEBGL3_SPEC;
-                            }
-                            else if (argv[0][4] == '2')
-                            {
-                                spec = SH_WEBGL2_SPEC;
-                            }
-                            else if (argv[0][4] == 'n')
-                            {
-                                spec = SH_WEBGL_SPEC;
-                            }
-                            else
-                            {
-                                spec = SH_WEBGL_SPEC;
-                                resources.FragmentPrecisionHigh = 1;
-                            }
-                            break;
-                        default:
-                            failCode = EFailUsage;
-                    }
-                }
-                else
-                {
-                    failCode = EFailUsage;
-                }
-                break;
-              case 'b':
-                if (argv[0][2] == '=')
-                {
-                    switch (argv[0][3])
-                    {
-                        case 'e':
-                            output = SH_ESSL_OUTPUT;
-                            compileOptions |= SH_INITIALIZE_UNINITIALIZED_LOCALS;
-                            break;
-                        case 'g':
-                            if (!ParseGLSLOutputVersion(&argv[0][sizeof("-b=g") - 1], &output))
-                            {
+                                break;
+                            case 'w':
+                                if (argv[0][4] == '3')
+                                {
+                                    spec = SH_WEBGL3_SPEC;
+                                }
+                                else if (argv[0][4] == '2')
+                                {
+                                    spec = SH_WEBGL2_SPEC;
+                                }
+                                else if (argv[0][4] == 'n')
+                                {
+                                    spec = SH_WEBGL_SPEC;
+                                }
+                                else
+                                {
+                                    spec                            = SH_WEBGL_SPEC;
+                                    resources.FragmentPrecisionHigh = 1;
+                                }
+                                break;
+                            default:
                                 failCode = EFailUsage;
-                            }
-                            compileOptions |= SH_INITIALIZE_UNINITIALIZED_LOCALS;
-                            break;
-                        case 'h':
-                            if (argv[0][4] == '1' && argv[0][5] == '1')
-                            {
-                                output = SH_HLSL_4_1_OUTPUT;
-                            }
-                            else
-                            {
-                                output = SH_HLSL_3_0_OUTPUT;
-                            }
-                            break;
-                        default:
-                            failCode = EFailUsage;
+                        }
                     }
-                }
-                else
-                {
-                    failCode = EFailUsage;
-                }
-                break;
-              case 'x':
-                if (argv[0][2] == '=')
-                {
-                    // clang-format off
+                    else
+                    {
+                        failCode = EFailUsage;
+                    }
+                    break;
+                case 'b':
+                    if (argv[0][2] == '=')
+                    {
+                        switch (argv[0][3])
+                        {
+                            case 'e':
+                                output                                       = SH_ESSL_OUTPUT;
+                                compileOptions.initializeUninitializedLocals = true;
+                                break;
+                            case 'g':
+                                if (!ParseGLSLOutputVersion(&argv[0][sizeof("-b=g") - 1], &output))
+                                {
+                                    failCode = EFailUsage;
+                                }
+                                compileOptions.initializeUninitializedLocals = true;
+                                break;
+                            case 'v':
+                                output = SH_SPIRV_VULKAN_OUTPUT;
+                                compileOptions.initializeUninitializedLocals = true;
+                                break;
+                            case 'h':
+                                if (argv[0][4] == '1' && argv[0][5] == '1')
+                                {
+                                    output = SH_HLSL_4_1_OUTPUT;
+                                }
+                                else
+                                {
+                                    output = SH_HLSL_3_0_OUTPUT;
+                                }
+                                break;
+                            case 'm':
+                                output = SH_MSL_METAL_OUTPUT;
+                                break;
+                            default:
+                                failCode = EFailUsage;
+                        }
+                    }
+                    else
+                    {
+                        failCode = EFailUsage;
+                    }
+                    break;
+                case 'x':
+                    if (argv[0][2] == '=')
+                    {
+                        // clang-format off
                     switch (argv[0][3])
                     {
                       case 'i': resources.OES_EGL_image_external = 1; break;
@@ -218,70 +247,105 @@ int main(int argc, char *argv[])
                       case 'n': resources.NV_shader_framebuffer_fetch = 1; break;
                       case 'a': resources.ARM_shader_framebuffer_fetch = 1; break;
                       case 'm':
+                          resources.OVR_multiview2 = 1;
                           resources.OVR_multiview = 1;
-                          compileOptions |= SH_INITIALIZE_BUILTINS_FOR_INSTANCED_MULTIVIEW;
-                          compileOptions |= SH_SELECT_VIEW_IN_NV_GLSL_VERTEX_SHADER;
+                          compileOptions.initializeBuiltinsForInstancedMultiview = true;
+                          compileOptions.selectViewInNvGLSLVertexShader = true;
                           break;
                       case 'y': resources.EXT_YUV_target = 1; break;
+                      case 's': resources.OES_sample_variables = 1; break;
                       default: failCode = EFailUsage;
                     }
-                    // clang-format on
-                }
-                else
-                {
+                        // clang-format on
+                    }
+                    else
+                    {
+                        failCode = EFailUsage;
+                    }
+                    break;
+                default:
                     failCode = EFailUsage;
-                }
-                break;
-              default: failCode = EFailUsage;
             }
         }
         else
         {
             if (spec != SH_GLES2_SPEC && spec != SH_WEBGL_SPEC)
             {
-                resources.MaxDrawBuffers = 8;
+                resources.MaxDrawBuffers             = 8;
                 resources.MaxVertexTextureImageUnits = 16;
                 resources.MaxTextureImageUnits       = 16;
             }
             ShHandle compiler = 0;
             switch (FindShaderType(argv[0]))
             {
-              case GL_VERTEX_SHADER:
-                if (vertexCompiler == 0)
-                {
-                    vertexCompiler =
-                        sh::ConstructCompiler(GL_VERTEX_SHADER, spec, output, &resources);
-                }
-                compiler = vertexCompiler;
-                break;
-              case GL_FRAGMENT_SHADER:
-                if (fragmentCompiler == 0)
-                {
-                    fragmentCompiler =
-                        sh::ConstructCompiler(GL_FRAGMENT_SHADER, spec, output, &resources);
-                }
-                compiler = fragmentCompiler;
-                break;
-              case GL_COMPUTE_SHADER:
-                  if (computeCompiler == 0)
-                  {
-                      computeCompiler =
-                          sh::ConstructCompiler(GL_COMPUTE_SHADER, spec, output, &resources);
-                  }
-                  compiler = computeCompiler;
-                  break;
-              case GL_GEOMETRY_SHADER_OES:
-                  if (geometryCompiler == 0)
-                  {
-                      geometryCompiler =
-                          sh::ConstructCompiler(GL_GEOMETRY_SHADER_OES, spec, output, &resources);
-                  }
-                  compiler = geometryCompiler;
-                  break;
-              default: break;
+                case GL_VERTEX_SHADER:
+                    if (vertexCompiler == 0)
+                    {
+                        vertexCompiler =
+                            sh::ConstructCompiler(GL_VERTEX_SHADER, spec, output, &resources);
+                    }
+                    compiler = vertexCompiler;
+                    break;
+                case GL_FRAGMENT_SHADER:
+                    if (fragmentCompiler == 0)
+                    {
+                        fragmentCompiler =
+                            sh::ConstructCompiler(GL_FRAGMENT_SHADER, spec, output, &resources);
+                    }
+                    compiler = fragmentCompiler;
+                    break;
+                case GL_COMPUTE_SHADER:
+                    if (computeCompiler == 0)
+                    {
+                        computeCompiler =
+                            sh::ConstructCompiler(GL_COMPUTE_SHADER, spec, output, &resources);
+                    }
+                    compiler = computeCompiler;
+                    break;
+                case GL_GEOMETRY_SHADER_EXT:
+                    if (geometryCompiler == 0)
+                    {
+                        resources.EXT_geometry_shader = 1;
+                        geometryCompiler =
+                            sh::ConstructCompiler(GL_GEOMETRY_SHADER_EXT, spec, output, &resources);
+                    }
+                    compiler = geometryCompiler;
+                    break;
+                case GL_TESS_CONTROL_SHADER_EXT:
+                    if (tessControlCompiler == 0)
+                    {
+                        assert(spec == SH_GLES3_1_SPEC || spec == SH_GLES3_2_SPEC);
+                        resources.EXT_tessellation_shader = 1;
+                        tessControlCompiler = sh::ConstructCompiler(GL_TESS_CONTROL_SHADER_EXT,
+                                                                    spec, output, &resources);
+                    }
+                    compiler = tessControlCompiler;
+                    break;
+                case GL_TESS_EVALUATION_SHADER_EXT:
+                    if (tessEvalCompiler == 0)
+                    {
+                        assert(spec == SH_GLES3_1_SPEC || spec == SH_GLES3_2_SPEC);
+                        resources.EXT_tessellation_shader = 1;
+                        tessEvalCompiler = sh::ConstructCompiler(GL_TESS_EVALUATION_SHADER_EXT,
+                                                                 spec, output, &resources);
+                    }
+                    compiler = tessEvalCompiler;
+                    break;
+                default:
+                    break;
             }
             if (compiler)
             {
+                switch (output)
+                {
+                    case SH_HLSL_3_0_OUTPUT:
+                    case SH_HLSL_4_1_OUTPUT:
+                        compileOptions.selectViewInNvGLSLVertexShader = false;
+                        break;
+                    default:
+                        break;
+                }
+
                 bool compiled = CompileFile(argv[0], compiler, compileOptions);
 
                 LogMsg("BEGIN", "COMPILER", numCompiles, "INFO LOG");
@@ -290,15 +354,23 @@ int main(int argc, char *argv[])
                 LogMsg("END", "COMPILER", numCompiles, "INFO LOG");
                 printf("\n\n");
 
-                if (compiled && (compileOptions & SH_OBJECT_CODE))
+                if (compiled && compileOptions.objectCode)
                 {
                     LogMsg("BEGIN", "COMPILER", numCompiles, "OBJ CODE");
-                    std::string code = sh::GetObjectCode(compiler);
-                    puts(code.c_str());
+                    if (output != SH_SPIRV_VULKAN_OUTPUT)
+                    {
+                        const std::string &code = sh::GetObjectCode(compiler);
+                        puts(code.c_str());
+                    }
+                    else
+                    {
+                        const sh::BinaryBlob &blob = sh::GetObjectBinaryBlob(compiler);
+                        PrintSpirv(blob);
+                    }
                     LogMsg("END", "COMPILER", numCompiles, "OBJ CODE");
                     printf("\n\n");
                 }
-                if (compiled && (compileOptions & SH_VARIABLES))
+                if (compiled && printActiveVariables)
                 {
                     LogMsg("BEGIN", "COMPILER", numCompiles, "VARIABLES");
                     PrintActiveVariables(compiler);
@@ -306,7 +378,7 @@ int main(int argc, char *argv[])
                     printf("\n\n");
                 }
                 if (!compiled)
-                  failCode = EFailCompile;
+                    failCode = EFailCompile;
                 ++numCompiles;
             }
             else
@@ -317,19 +389,39 @@ int main(int argc, char *argv[])
     }
 
     if ((vertexCompiler == 0) && (fragmentCompiler == 0) && (computeCompiler == 0) &&
-        (geometryCompiler == 0))
+        (geometryCompiler == 0) && (tessControlCompiler == 0) && (tessEvalCompiler == 0))
+    {
         failCode = EFailUsage;
+    }
     if (failCode == EFailUsage)
+    {
         usage();
+    }
 
     if (vertexCompiler)
+    {
         sh::Destruct(vertexCompiler);
+    }
     if (fragmentCompiler)
+    {
         sh::Destruct(fragmentCompiler);
+    }
     if (computeCompiler)
+    {
         sh::Destruct(computeCompiler);
+    }
     if (geometryCompiler)
+    {
         sh::Destruct(geometryCompiler);
+    }
+    if (tessControlCompiler)
+    {
+        sh::Destruct(tessControlCompiler);
+    }
+    if (tessEvalCompiler)
+    {
+        sh::Destruct(tessEvalCompiler);
+    }
 
     sh::Finalize();
 
@@ -343,15 +435,15 @@ void usage()
 {
     // clang-format off
     printf(
-        "Usage: translate [-i -o -u -l -p -b=e -b=g -b=h9 -x=i -x=d] file1 file2 ...\n"
-        "Where: filename : filename ending in .frag or .vert\n"
+        "Usage: translate [-i -o -u -l -b=e -b=g -b=h9 -x=i -x=d] file1 file2 ...\n"
+        "Where: filename : filename ending in .frag*, .vert*, .comp*, .geom*, .tcs* or .tes*\n"
         "       -i       : print intermediate tree\n"
         "       -o       : print translated code\n"
         "       -u       : print active attribs, uniforms, varyings and program outputs\n"
-        "       -p       : use precision emulation\n"
         "       -s=e2    : use GLES2 spec (this is by default)\n"
         "       -s=e3    : use GLES3 spec\n"
         "       -s=e31   : use GLES31 spec (in development)\n"
+        "       -s=e32   : use GLES32 spec (in development)\n"
         "       -s=w     : use WebGL 1.0 spec\n"
         "       -s=wn    : use WebGL 1.0 spec with no highp support in fragment shaders\n"
         "       -s=w2    : use WebGL 2.0 spec\n"
@@ -359,8 +451,10 @@ void usage()
         "       -b=g     : output GLSL code (compatibility profile)\n"
         "       -b=g[NUM]: output GLSL code (NUM can be 130, 140, 150, 330, 400, 410, 420, 430, "
         "440, 450)\n"
+        "       -b=v     : output Vulkan SPIR-V code\n"
         "       -b=h9    : output HLSL9 code\n"
         "       -b=h11   : output HLSL11 code\n"
+        "       -b=m     : output MSL code (direct)\n"
         "       -x=i     : enable GL_OES_EGL_image_external\n"
         "       -x=d     : enable GL_OES_EGL_standard_derivatives\n"
         "       -x=r     : enable ARB_texture_rectangle\n"
@@ -372,7 +466,8 @@ void usage()
         "       -x=n     : enable NV_shader_framebuffer_fetch\n"
         "       -x=a     : enable ARM_shader_framebuffer_fetch\n"
         "       -x=m     : enable OVR_multiview\n"
-        "       -x=y     : enable YUV_target\n");
+        "       -x=y     : enable YUV_target\n"
+        "       -x=s     : enable OES_sample_variables\n");
     // clang-format on
 }
 
@@ -382,6 +477,10 @@ void usage()
 //
 //   .frag*    = fragment shader
 //   .vert*    = vertex shader
+//   .comp*    = compute shader
+//   .geom*    = geometry shader
+//   .tcs*     = tessellation control shader
+//   .tes*     = tessellation evaluation shader
 //
 sh::GLenum FindShaderType(const char *fileName)
 {
@@ -390,7 +489,8 @@ sh::GLenum FindShaderType(const char *fileName)
     const char *ext = strrchr(fileName, '.');
 
     if (ext && strcmp(ext, ".sl") == 0)
-        for (; ext > fileName && ext[0] != '.'; ext--);
+        for (; ext > fileName && ext[0] != '.'; ext--)
+            ;
 
     ext = strrchr(fileName, '.');
     if (ext)
@@ -402,7 +502,11 @@ sh::GLenum FindShaderType(const char *fileName)
         if (strncmp(ext, ".comp", 5) == 0)
             return GL_COMPUTE_SHADER;
         if (strncmp(ext, ".geom", 5) == 0)
-            return GL_GEOMETRY_SHADER_OES;
+            return GL_GEOMETRY_SHADER_EXT;
+        if (strncmp(ext, ".tcs", 5) == 0)
+            return GL_TESS_CONTROL_SHADER_EXT;
+        if (strncmp(ext, ".tes", 5) == 0)
+            return GL_TESS_EVALUATION_SHADER_EXT;
     }
 
     return GL_FRAGMENT_SHADER;
@@ -411,7 +515,7 @@ sh::GLenum FindShaderType(const char *fileName)
 //
 //   Read a file's data into a string, and compile it using sh::Compile
 //
-bool CompileFile(char *fileName, ShHandle compiler, ShCompileOptions compileOptions)
+bool CompileFile(char *fileName, ShHandle compiler, const ShCompileOptions &compileOptions)
 {
     ShaderSource source;
     if (!ReadShaderSource(fileName, source))
@@ -433,142 +537,203 @@ void PrintVariable(const std::string &prefix, size_t index, const sh::ShaderVari
     std::string typeName;
     switch (var.type)
     {
-      case GL_FLOAT: typeName = "GL_FLOAT"; break;
-      case GL_FLOAT_VEC2: typeName = "GL_FLOAT_VEC2"; break;
-      case GL_FLOAT_VEC3: typeName = "GL_FLOAT_VEC3"; break;
-      case GL_FLOAT_VEC4: typeName = "GL_FLOAT_VEC4"; break;
-      case GL_INT: typeName = "GL_INT"; break;
-      case GL_INT_VEC2: typeName = "GL_INT_VEC2"; break;
-      case GL_INT_VEC3: typeName = "GL_INT_VEC3"; break;
-      case GL_INT_VEC4: typeName = "GL_INT_VEC4"; break;
-      case GL_UNSIGNED_INT: typeName = "GL_UNSIGNED_INT"; break;
-      case GL_UNSIGNED_INT_VEC2: typeName = "GL_UNSIGNED_INT_VEC2"; break;
-      case GL_UNSIGNED_INT_VEC3: typeName = "GL_UNSIGNED_INT_VEC3"; break;
-      case GL_UNSIGNED_INT_VEC4: typeName = "GL_UNSIGNED_INT_VEC4"; break;
-      case GL_BOOL: typeName = "GL_BOOL"; break;
-      case GL_BOOL_VEC2: typeName = "GL_BOOL_VEC2"; break;
-      case GL_BOOL_VEC3: typeName = "GL_BOOL_VEC3"; break;
-      case GL_BOOL_VEC4: typeName = "GL_BOOL_VEC4"; break;
-      case GL_FLOAT_MAT2: typeName = "GL_FLOAT_MAT2"; break;
-      case GL_FLOAT_MAT3: typeName = "GL_FLOAT_MAT3"; break;
-      case GL_FLOAT_MAT4: typeName = "GL_FLOAT_MAT4"; break;
-      case GL_FLOAT_MAT2x3: typeName = "GL_FLOAT_MAT2x3"; break;
-      case GL_FLOAT_MAT3x2: typeName = "GL_FLOAT_MAT3x2"; break;
-      case GL_FLOAT_MAT4x2: typeName = "GL_FLOAT_MAT4x2"; break;
-      case GL_FLOAT_MAT2x4: typeName = "GL_FLOAT_MAT2x4"; break;
-      case GL_FLOAT_MAT3x4: typeName = "GL_FLOAT_MAT3x4"; break;
-      case GL_FLOAT_MAT4x3: typeName = "GL_FLOAT_MAT4x3"; break;
+        case GL_FLOAT:
+            typeName = "GL_FLOAT";
+            break;
+        case GL_FLOAT_VEC2:
+            typeName = "GL_FLOAT_VEC2";
+            break;
+        case GL_FLOAT_VEC3:
+            typeName = "GL_FLOAT_VEC3";
+            break;
+        case GL_FLOAT_VEC4:
+            typeName = "GL_FLOAT_VEC4";
+            break;
+        case GL_INT:
+            typeName = "GL_INT";
+            break;
+        case GL_INT_VEC2:
+            typeName = "GL_INT_VEC2";
+            break;
+        case GL_INT_VEC3:
+            typeName = "GL_INT_VEC3";
+            break;
+        case GL_INT_VEC4:
+            typeName = "GL_INT_VEC4";
+            break;
+        case GL_UNSIGNED_INT:
+            typeName = "GL_UNSIGNED_INT";
+            break;
+        case GL_UNSIGNED_INT_VEC2:
+            typeName = "GL_UNSIGNED_INT_VEC2";
+            break;
+        case GL_UNSIGNED_INT_VEC3:
+            typeName = "GL_UNSIGNED_INT_VEC3";
+            break;
+        case GL_UNSIGNED_INT_VEC4:
+            typeName = "GL_UNSIGNED_INT_VEC4";
+            break;
+        case GL_BOOL:
+            typeName = "GL_BOOL";
+            break;
+        case GL_BOOL_VEC2:
+            typeName = "GL_BOOL_VEC2";
+            break;
+        case GL_BOOL_VEC3:
+            typeName = "GL_BOOL_VEC3";
+            break;
+        case GL_BOOL_VEC4:
+            typeName = "GL_BOOL_VEC4";
+            break;
+        case GL_FLOAT_MAT2:
+            typeName = "GL_FLOAT_MAT2";
+            break;
+        case GL_FLOAT_MAT3:
+            typeName = "GL_FLOAT_MAT3";
+            break;
+        case GL_FLOAT_MAT4:
+            typeName = "GL_FLOAT_MAT4";
+            break;
+        case GL_FLOAT_MAT2x3:
+            typeName = "GL_FLOAT_MAT2x3";
+            break;
+        case GL_FLOAT_MAT3x2:
+            typeName = "GL_FLOAT_MAT3x2";
+            break;
+        case GL_FLOAT_MAT4x2:
+            typeName = "GL_FLOAT_MAT4x2";
+            break;
+        case GL_FLOAT_MAT2x4:
+            typeName = "GL_FLOAT_MAT2x4";
+            break;
+        case GL_FLOAT_MAT3x4:
+            typeName = "GL_FLOAT_MAT3x4";
+            break;
+        case GL_FLOAT_MAT4x3:
+            typeName = "GL_FLOAT_MAT4x3";
+            break;
 
-      case GL_SAMPLER_2D: typeName = "GL_SAMPLER_2D"; break;
-      case GL_SAMPLER_3D:
-          typeName = "GL_SAMPLER_3D";
-          break;
-      case GL_SAMPLER_CUBE:
-          typeName = "GL_SAMPLER_CUBE";
-          break;
-      case GL_SAMPLER_CUBE_SHADOW:
-          typeName = "GL_SAMPLER_CUBE_SHADOW";
-          break;
-      case GL_SAMPLER_2D_SHADOW:
-          typeName = "GL_SAMPLER_2D_ARRAY_SHADOW";
-          break;
-      case GL_SAMPLER_2D_ARRAY:
-          typeName = "GL_SAMPLER_2D_ARRAY";
-          break;
-      case GL_SAMPLER_2D_ARRAY_SHADOW:
-          typeName = "GL_SAMPLER_2D_ARRAY_SHADOW";
-          break;
-      case GL_SAMPLER_2D_MULTISAMPLE:
-          typeName = "GL_SAMPLER_2D_MULTISAMPLE";
-          break;
-      case GL_IMAGE_2D:
-          typeName = "GL_IMAGE_2D";
-          break;
-      case GL_IMAGE_3D:
-          typeName = "GL_IMAGE_3D";
-          break;
-      case GL_IMAGE_CUBE:
-          typeName = "GL_IMAGE_CUBE";
-          break;
-      case GL_IMAGE_2D_ARRAY:
-          typeName = "GL_IMAGE_2D_ARRAY";
-          break;
+        case GL_SAMPLER_2D:
+            typeName = "GL_SAMPLER_2D";
+            break;
+        case GL_SAMPLER_3D:
+            typeName = "GL_SAMPLER_3D";
+            break;
+        case GL_SAMPLER_CUBE:
+            typeName = "GL_SAMPLER_CUBE";
+            break;
+        case GL_SAMPLER_CUBE_SHADOW:
+            typeName = "GL_SAMPLER_CUBE_SHADOW";
+            break;
+        case GL_SAMPLER_2D_SHADOW:
+            typeName = "GL_SAMPLER_2D_ARRAY_SHADOW";
+            break;
+        case GL_SAMPLER_2D_ARRAY:
+            typeName = "GL_SAMPLER_2D_ARRAY";
+            break;
+        case GL_SAMPLER_2D_ARRAY_SHADOW:
+            typeName = "GL_SAMPLER_2D_ARRAY_SHADOW";
+            break;
+        case GL_SAMPLER_2D_MULTISAMPLE:
+            typeName = "GL_SAMPLER_2D_MULTISAMPLE";
+            break;
+        case GL_IMAGE_2D:
+            typeName = "GL_IMAGE_2D";
+            break;
+        case GL_IMAGE_3D:
+            typeName = "GL_IMAGE_3D";
+            break;
+        case GL_IMAGE_CUBE:
+            typeName = "GL_IMAGE_CUBE";
+            break;
+        case GL_IMAGE_2D_ARRAY:
+            typeName = "GL_IMAGE_2D_ARRAY";
+            break;
 
-      case GL_INT_SAMPLER_2D:
-          typeName = "GL_INT_SAMPLER_2D";
-          break;
-      case GL_INT_SAMPLER_3D:
-          typeName = "GL_INT_SAMPLER_3D";
-          break;
-      case GL_INT_SAMPLER_CUBE:
-          typeName = "GL_INT_SAMPLER_CUBE";
-          break;
-      case GL_INT_SAMPLER_2D_ARRAY:
-          typeName = "GL_INT_SAMPLER_2D_ARRAY";
-          break;
-      case GL_INT_SAMPLER_2D_MULTISAMPLE:
-          typeName = "GL_INT_SAMPLER_2D_MULTISAMPLE";
-          break;
-      case GL_INT_IMAGE_2D:
-          typeName = "GL_INT_IMAGE_2D";
-          break;
-      case GL_INT_IMAGE_3D:
-          typeName = "GL_INT_IMAGE_3D";
-          break;
-      case GL_INT_IMAGE_CUBE:
-          typeName = "GL_INT_IMAGE_CUBE";
-          break;
-      case GL_INT_IMAGE_2D_ARRAY:
-          typeName = "GL_INT_IMAGE_2D_ARRAY";
-          break;
+        case GL_INT_SAMPLER_2D:
+            typeName = "GL_INT_SAMPLER_2D";
+            break;
+        case GL_INT_SAMPLER_3D:
+            typeName = "GL_INT_SAMPLER_3D";
+            break;
+        case GL_INT_SAMPLER_CUBE:
+            typeName = "GL_INT_SAMPLER_CUBE";
+            break;
+        case GL_INT_SAMPLER_2D_ARRAY:
+            typeName = "GL_INT_SAMPLER_2D_ARRAY";
+            break;
+        case GL_INT_SAMPLER_2D_MULTISAMPLE:
+            typeName = "GL_INT_SAMPLER_2D_MULTISAMPLE";
+            break;
+        case GL_INT_IMAGE_2D:
+            typeName = "GL_INT_IMAGE_2D";
+            break;
+        case GL_INT_IMAGE_3D:
+            typeName = "GL_INT_IMAGE_3D";
+            break;
+        case GL_INT_IMAGE_CUBE:
+            typeName = "GL_INT_IMAGE_CUBE";
+            break;
+        case GL_INT_IMAGE_2D_ARRAY:
+            typeName = "GL_INT_IMAGE_2D_ARRAY";
+            break;
 
-      case GL_UNSIGNED_INT_SAMPLER_2D:
-          typeName = "GL_UNSIGNED_INT_SAMPLER_2D";
-          break;
-      case GL_UNSIGNED_INT_SAMPLER_3D:
-          typeName = "GL_UNSIGNED_INT_SAMPLER_3D";
-          break;
-      case GL_UNSIGNED_INT_SAMPLER_CUBE:
-          typeName = "GL_UNSIGNED_INT_SAMPLER_CUBE";
-          break;
-      case GL_UNSIGNED_INT_SAMPLER_2D_ARRAY:
-          typeName = "GL_UNSIGNED_INT_SAMPLER_2D_ARRAY";
-          break;
-      case GL_UNSIGNED_INT_ATOMIC_COUNTER:
-          typeName = "GL_UNSIGNED_INT_ATOMIC_COUNTER";
-          break;
-      case GL_UNSIGNED_INT_SAMPLER_2D_MULTISAMPLE:
-          typeName = "GL_UNSIGNED_INT_SAMPLER_2D_MULTISAMPLE";
-          break;
-      case GL_UNSIGNED_INT_IMAGE_2D:
-          typeName = "GL_UNSIGNED_INT_IMAGE_2D";
-          break;
-      case GL_UNSIGNED_INT_IMAGE_3D:
-          typeName = "GL_UNSIGNED_INT_IMAGE_3D";
-          break;
-      case GL_UNSIGNED_INT_IMAGE_CUBE:
-          typeName = "GL_UNSIGNED_INT_IMAGE_CUBE";
-          break;
-      case GL_UNSIGNED_INT_IMAGE_2D_ARRAY:
-          typeName = "GL_UNSIGNED_INT_IMAGE_2D_ARRAY";
-          break;
+        case GL_UNSIGNED_INT_SAMPLER_2D:
+            typeName = "GL_UNSIGNED_INT_SAMPLER_2D";
+            break;
+        case GL_UNSIGNED_INT_SAMPLER_3D:
+            typeName = "GL_UNSIGNED_INT_SAMPLER_3D";
+            break;
+        case GL_UNSIGNED_INT_SAMPLER_CUBE:
+            typeName = "GL_UNSIGNED_INT_SAMPLER_CUBE";
+            break;
+        case GL_UNSIGNED_INT_SAMPLER_2D_ARRAY:
+            typeName = "GL_UNSIGNED_INT_SAMPLER_2D_ARRAY";
+            break;
+        case GL_UNSIGNED_INT_ATOMIC_COUNTER:
+            typeName = "GL_UNSIGNED_INT_ATOMIC_COUNTER";
+            break;
+        case GL_UNSIGNED_INT_SAMPLER_2D_MULTISAMPLE:
+            typeName = "GL_UNSIGNED_INT_SAMPLER_2D_MULTISAMPLE";
+            break;
+        case GL_UNSIGNED_INT_IMAGE_2D:
+            typeName = "GL_UNSIGNED_INT_IMAGE_2D";
+            break;
+        case GL_UNSIGNED_INT_IMAGE_3D:
+            typeName = "GL_UNSIGNED_INT_IMAGE_3D";
+            break;
+        case GL_UNSIGNED_INT_IMAGE_CUBE:
+            typeName = "GL_UNSIGNED_INT_IMAGE_CUBE";
+            break;
+        case GL_UNSIGNED_INT_IMAGE_2D_ARRAY:
+            typeName = "GL_UNSIGNED_INT_IMAGE_2D_ARRAY";
+            break;
 
-      case GL_SAMPLER_EXTERNAL_OES: typeName = "GL_SAMPLER_EXTERNAL_OES"; break;
-      case GL_SAMPLER_EXTERNAL_2D_Y2Y_EXT:
-          typeName = "GL_SAMPLER_EXTERNAL_2D_Y2Y_EXT";
-          break;
-      default: typeName = "UNKNOWN"; break;
+        case GL_SAMPLER_EXTERNAL_OES:
+            typeName = "GL_SAMPLER_EXTERNAL_OES";
+            break;
+        case GL_SAMPLER_EXTERNAL_2D_Y2Y_EXT:
+            typeName = "GL_SAMPLER_EXTERNAL_2D_Y2Y_EXT";
+            break;
+        default:
+            typeName = "UNKNOWN";
+            break;
     }
 
-    printf("%s %u : name=%s, mappedName=%s, type=%s, arraySize=%u\n", prefix.c_str(),
+    printf("%s %u : name=%s, mappedName=%s, type=%s, arraySizes=", prefix.c_str(),
            static_cast<unsigned int>(index), var.name.c_str(), var.mappedName.c_str(),
-           typeName.c_str(), var.arraySize);
+           typeName.c_str());
+    for (unsigned int arraySize : var.arraySizes)
+    {
+        printf("%u ", arraySize);
+    }
+    printf("\n");
     if (var.fields.size())
     {
         std::string structPrefix;
         for (size_t i = 0; i < prefix.size(); ++i)
             structPrefix += ' ';
-        printf("%s  struct %s\n", structPrefix.c_str(), var.structName.c_str());
+        printf("%s  struct %s\n", structPrefix.c_str(), var.structOrBlockName.c_str());
         structPrefix += "    field";
         for (size_t i = 0; i < var.fields.size(); ++i)
             PrintVariable(structPrefix, i, var.fields[i]);
@@ -577,18 +742,18 @@ void PrintVariable(const std::string &prefix, size_t index, const sh::ShaderVari
 
 static void PrintActiveVariables(ShHandle compiler)
 {
-    const std::vector<sh::Uniform> *uniforms       = sh::GetUniforms(compiler);
-    const std::vector<sh::Varying> *inputVaryings  = sh::GetInputVaryings(compiler);
-    const std::vector<sh::Varying> *outputVaryings = sh::GetOutputVaryings(compiler);
-    const std::vector<sh::Attribute> *attributes   = sh::GetAttributes(compiler);
-    const std::vector<sh::OutputVariable> *outputs = sh::GetOutputVariables(compiler);
+    const std::vector<sh::ShaderVariable> *uniforms       = sh::GetUniforms(compiler);
+    const std::vector<sh::ShaderVariable> *inputVaryings  = sh::GetInputVaryings(compiler);
+    const std::vector<sh::ShaderVariable> *outputVaryings = sh::GetOutputVaryings(compiler);
+    const std::vector<sh::ShaderVariable> *attributes     = sh::GetAttributes(compiler);
+    const std::vector<sh::ShaderVariable> *outputs        = sh::GetOutputVariables(compiler);
     for (size_t varCategory = 0; varCategory < 5; ++varCategory)
     {
         size_t numVars = 0;
         std::string varCategoryName;
         if (varCategory == 0)
         {
-            numVars = uniforms->size();
+            numVars         = uniforms->size();
             varCategoryName = "uniform";
         }
         else if (varCategory == 1)
@@ -603,7 +768,7 @@ static void PrintActiveVariables(ShHandle compiler)
         }
         else if (varCategory == 3)
         {
-            numVars = attributes->size();
+            numVars         = attributes->size();
             varCategoryName = "attribute";
         }
         else
@@ -653,14 +818,13 @@ static bool ReadShaderSource(const char *fileName, ShaderSource &source)
     // string is added to vector.
     do
     {
-        char *data = new char[len + 1];
+        char *data   = new char[len + 1];
         size_t nread = fread(data, 1, len, in);
-        data[nread] = '\0';
+        data[nread]  = '\0';
         source.push_back(data);
 
         count -= nread;
-    }
-    while (count > 0);
+    } while (count > 0);
 
     fclose(in);
     return true;
@@ -670,7 +834,7 @@ static void FreeShaderSource(ShaderSource &source)
 {
     for (ShaderSource::size_type i = 0; i < source.size(); ++i)
     {
-        delete [] source[i];
+        delete[] source[i];
     }
     source.clear();
 }
@@ -743,4 +907,18 @@ static bool ParseIntValue(const std::string &num, int emptyDefault, int *outValu
     }
     *outValue = value;
     return true;
+}
+
+static void PrintSpirv(const sh::BinaryBlob &blob)
+{
+#if defined(ANGLE_ENABLE_VULKAN)
+    spvtools::SpirvTools spirvTools(SPV_ENV_VULKAN_1_1);
+
+    std::string readableSpirv;
+    spirvTools.Disassemble(blob, &readableSpirv,
+                           SPV_BINARY_TO_TEXT_OPTION_COMMENT | SPV_BINARY_TO_TEXT_OPTION_INDENT |
+                               SPV_BINARY_TO_TEXT_OPTION_NESTED_INDENT);
+
+    puts(readableSpirv.c_str());
+#endif
 }

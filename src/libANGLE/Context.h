@@ -1,5 +1,6 @@
 //
-// Copyright (c) 2002-2014 The ANGLE Project Authors. All rights reserved.
+//
+// Copyright 2002 The ANGLE Project Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
@@ -10,28 +11,47 @@
 #ifndef LIBANGLE_CONTEXT_H_
 #define LIBANGLE_CONTEXT_H_
 
+#include <mutex>
 #include <set>
 #include <string>
 
 #include "angle_gl.h"
 #include "common/MemoryBuffer.h"
+#include "common/PackedEnums.h"
+#include "common/SimpleMutex.h"
 #include "common/angleutils.h"
 #include "libANGLE/Caps.h"
 #include "libANGLE/Constants.h"
-#include "libANGLE/ContextState.h"
+#include "libANGLE/Context_gles_1_0_autogen.h"
+#include "libANGLE/Context_gles_2_0_autogen.h"
+#include "libANGLE/Context_gles_3_0_autogen.h"
+#include "libANGLE/Context_gles_3_1_autogen.h"
+#include "libANGLE/Context_gles_3_2_autogen.h"
+#include "libANGLE/Context_gles_ext_autogen.h"
 #include "libANGLE/Error.h"
+#include "libANGLE/Framebuffer.h"
 #include "libANGLE/HandleAllocator.h"
 #include "libANGLE/RefCountObject.h"
+#include "libANGLE/ResourceManager.h"
 #include "libANGLE/ResourceMap.h"
+#include "libANGLE/State.h"
 #include "libANGLE/VertexAttribute.h"
-#include "libANGLE/Workarounds.h"
 #include "libANGLE/angletypes.h"
+
+namespace angle
+{
+class Closure;
+class FrameCapture;
+class FrameCaptureShared;
+struct FrontendFeatures;
+class WaitableEvent;
+}  // namespace angle
 
 namespace rx
 {
 class ContextImpl;
 class EGLImplFactory;
-}
+}  // namespace rx
 
 namespace egl
 {
@@ -39,859 +59,925 @@ class AttributeMap;
 class Surface;
 struct Config;
 class Thread;
-}
+}  // namespace egl
 
 namespace gl
 {
 class Buffer;
 class Compiler;
 class FenceNV;
-class FenceSync;
-class Framebuffer;
+class GLES1Renderer;
 class MemoryProgramCache;
+class MemoryShaderCache;
+class MemoryObject;
+class PixelLocalStoragePlane;
 class Program;
+class ProgramPipeline;
 class Query;
 class Renderbuffer;
 class Sampler;
+class Semaphore;
 class Shader;
+class Sync;
 class Texture;
 class TransformFeedback;
 class VertexArray;
 struct VertexAttribute;
 
-class Context final : public ValidationContext
+class ErrorSet : angle::NonCopyable
 {
   public:
-    Context(rx::EGLImplFactory *implFactory,
+    explicit ErrorSet(Debug *debug,
+                      const angle::FrontendFeatures &frontendFeatures,
+                      const egl::AttributeMap &attribs);
+    ~ErrorSet();
+
+    bool empty() const { return mHasAnyErrors.load(std::memory_order_relaxed) == 0; }
+    GLenum popError();
+
+    void handleError(GLenum errorCode,
+                     const char *message,
+                     const char *file,
+                     const char *function,
+                     unsigned int line);
+
+    void validationError(angle::EntryPoint entryPoint, GLenum errorCode, const char *message);
+    ANGLE_FORMAT_PRINTF(4, 5)
+    void validationErrorF(angle::EntryPoint entryPoint, GLenum errorCode, const char *format, ...);
+
+    bool skipValidation() const
+    {
+        // Ensure we don't skip validation when context becomes lost, since implementations
+        // generally assume a non-lost context, non-null objects, etc.
+        ASSERT(!isContextLost() || !mSkipValidation);
+        return mSkipValidation.load(std::memory_order_relaxed) != 0;
+    }
+    void forceValidation() { mSkipValidation = 0; }
+
+    void markContextLost(GraphicsResetStatus status);
+    bool isContextLost() const { return mContextLost.load(std::memory_order_relaxed) != 0; }
+    GLenum getGraphicsResetStatus(rx::ContextImpl *contextImpl);
+    GLenum getResetStrategy() const { return mResetStrategy; }
+    GLenum getErrorForCapture() const;
+#if defined(ANGLE_ENABLE_ASSERTS)
+    uint32_t getPushedErrorCount() const { return mPushedErrors; }
+#endif
+
+  private:
+    void setContextLost();
+    void pushError(GLenum errorCode);
+    std::unique_lock<std::mutex> getLockIfNotAlready();
+
+    // Non-atomic members of this class are protected by a mutex.  This is to allow errors to be
+    // safely set by entry points that don't hold a lock.  Note that other contexts may end up
+    // triggering an error on this context (through making failable calls on other contexts in the
+    // share group).
+    //
+    // Note also that the functionality used through the Debug class is thread-safe.
+    std::mutex mMutex;
+
+    // Error handling and reporting
+    Debug *mDebug;
+    std::set<GLenum> mErrors;
+
+    const GLenum mResetStrategy;
+    const bool mLoseContextOnOutOfMemory;
+
+    // Context-loss handling
+    bool mContextLostForced;
+    GraphicsResetStatus mResetStatus;
+
+    // The following are atomic and lockless as they are very frequently accessed.
+    std::atomic_int mSkipValidation;
+    std::atomic_int mContextLost;
+#if defined(ANGLE_ENABLE_ASSERTS)
+    std::atomic_uint32_t mPushedErrors;  // must be unsigned to handle overflows
+#endif
+    std::atomic_int mHasAnyErrors;
+};
+
+enum class VertexAttribTypeCase
+{
+    Invalid        = 0,
+    Valid          = 1,
+    ValidSize4Only = 2,
+    ValidSize3or4  = 3,
+};
+
+// Part of StateCache (see below) that is private to the context and is inaccessible to other
+// contexts.
+class PrivateStateCache final : angle::NonCopyable
+{
+  public:
+    PrivateStateCache();
+    ~PrivateStateCache();
+
+    void onCapChange() { mIsCachedBasicDrawStatesErrorValid = false; }
+    void onColorMaskChange() { mIsCachedBasicDrawStatesErrorValid = false; }
+    void onDefaultVertexAttributeChange() { mIsCachedBasicDrawStatesErrorValid = false; }
+
+    // Blending updates invalidate draw
+    // state in the following cases:
+    //
+    // * Blend equations have been changed and the context
+    //   supports KHR_blend_equation_advanced. The number
+    //   of enabled draw buffers may need to be checked
+    //   to not be greater than 1.
+    //
+    // * Blend funcs have been changed with indexed
+    //   commands. The D3D11 backend cannot support
+    //   constant color and alpha blend funcs together
+    //   so a check is needed across all draw buffers.
+    //
+    // * Blend funcs have been changed and the context
+    //   supports EXT_blend_func_extended. The number
+    //   of enabled draw buffers may need to be checked
+    //   against MAX_DUAL_SOURCE_DRAW_BUFFERS_EXT limit.
+    void onBlendEquationOrFuncChange() { mIsCachedBasicDrawStatesErrorValid = false; }
+
+    void onStencilStateChange() { mIsCachedBasicDrawStatesErrorValid = false; }
+
+    bool isCachedBasicDrawStatesErrorValid() const { return mIsCachedBasicDrawStatesErrorValid; }
+    void setCachedBasicDrawStatesErrorValid() const { mIsCachedBasicDrawStatesErrorValid = true; }
+
+  private:
+    // StateCache::mCachedBasicDrawStatesError* may be invalidated through numerous calls (see the
+    // comment on getBasicDrawStatesErrorString), some of which may originate from other contexts
+    // (through the observer interface).  However, ContextPrivate* helpers may also need to
+    // invalidate the draw states, but they are called without holding the share group lock.  The
+    // following tracks whether StateCache::mCachedBasicDrawStatesError* values are valid and is
+    // accessed only by the context itself.
+    mutable bool mIsCachedBasicDrawStatesErrorValid;
+};
+
+// Helper class for managing cache variables and state changes.
+class StateCache final : angle::NonCopyable
+{
+  public:
+    StateCache();
+    ~StateCache();
+
+    void initialize(Context *context);
+
+    // Places that can trigger updateActiveAttribsMask:
+    // 1. onVertexArrayBindingChange.
+    // 2. onProgramExecutableChange.
+    // 3. onVertexArrayStateChange.
+    // 4. onGLES1ClientStateChange.
+    // 5. onGLES1TextureStateChange.
+    AttributesMask getActiveBufferedAttribsMask() const { return mCachedActiveBufferedAttribsMask; }
+    AttributesMask getActiveClientAttribsMask() const { return mCachedActiveClientAttribsMask; }
+    AttributesMask getActiveDefaultAttribsMask() const { return mCachedActiveDefaultAttribsMask; }
+    bool hasAnyEnabledClientAttrib() const { return mCachedHasAnyEnabledClientAttrib; }
+    bool hasAnyActiveClientAttrib() const { return mCachedActiveClientAttribsMask.any(); }
+
+    // Places that can trigger updateVertexElementLimits:
+    // 1. onVertexArrayBindingChange.
+    // 2. onProgramExecutableChange.
+    // 3. onVertexArrayFormatChange.
+    // 4. onVertexArrayBufferChange.
+    // 5. onVertexArrayStateChange.
+    GLint64 getNonInstancedVertexElementLimit() const
+    {
+        return mCachedNonInstancedVertexElementLimit;
+    }
+    GLint64 getInstancedVertexElementLimit() const { return mCachedInstancedVertexElementLimit; }
+
+    // Places that can trigger updateBasicDrawStatesError:
+    // 1. onVertexArrayBindingChange.
+    // 2. onProgramExecutableChange.
+    // 3. onVertexArrayBufferContentsChange.
+    // 4. onVertexArrayStateChange.
+    // 5. onVertexArrayBufferStateChange.
+    // 6. onDrawFramebufferChange.
+    // 7. onActiveTextureChange.
+    // 8. onQueryChange.
+    // 9. onActiveTransformFeedbackChange.
+    // 10. onUniformBufferStateChange.
+    // 11. onBufferBindingChange.
+    //
+    // Additionally, the following in PrivateStateCache can lead to updateBasicDrawStatesError:
+    // 1. onCapChange.
+    // 2. onStencilStateChange.
+    // 3. onDefaultVertexAttributeChange.
+    // 4. onColorMaskChange.
+    // 5. onBlendEquationOrFuncChange.
+    intptr_t getBasicDrawStatesErrorString(const Context *context,
+                                           const PrivateStateCache *privateStateCache) const
+    {
+        // This is only ever called with the context that owns this state cache
+        ASSERT(isCurrentContext(context, privateStateCache));
+        if (privateStateCache->isCachedBasicDrawStatesErrorValid() &&
+            mCachedBasicDrawStatesErrorString != kInvalidPointer)
+        {
+            return mCachedBasicDrawStatesErrorString;
+        }
+
+        return getBasicDrawStatesErrorImpl(context, privateStateCache);
+    }
+
+    // The GL error enum to use when generating errors due to failed draw states. Only valid if
+    // getBasicDrawStatesErrorString returns non-zero.
+    GLenum getBasicDrawElementsErrorCode() const
+    {
+        ASSERT(mCachedBasicDrawStatesErrorString != kInvalidPointer);
+        ASSERT(mCachedBasicDrawStatesErrorCode != GL_NO_ERROR);
+        return mCachedBasicDrawStatesErrorCode;
+    }
+
+    // Places that can trigger updateProgramPipelineError:
+    // 1. onProgramExecutableChange.
+    intptr_t getProgramPipelineError(const Context *context) const
+    {
+        if (mCachedProgramPipelineError != kInvalidPointer)
+        {
+            return mCachedProgramPipelineError;
+        }
+
+        return getProgramPipelineErrorImpl(context);
+    }
+
+    // Places that can trigger updateBasicDrawElementsError:
+    // 1. onActiveTransformFeedbackChange.
+    // 2. onVertexArrayBufferStateChange.
+    // 3. onBufferBindingChange.
+    // 4. onVertexArrayStateChange.
+    // 5. onVertexArrayBindingStateChange.
+    intptr_t getBasicDrawElementsError(const Context *context) const
+    {
+        if (mCachedBasicDrawElementsError != kInvalidPointer)
+        {
+            return mCachedBasicDrawElementsError;
+        }
+
+        return getBasicDrawElementsErrorImpl(context);
+    }
+
+    // Places that can trigger updateValidDrawModes:
+    // 1. onProgramExecutableChange.
+    // 2. onActiveTransformFeedbackChange.
+    bool isValidDrawMode(PrimitiveMode primitiveMode) const
+    {
+        return mCachedValidDrawModes[primitiveMode];
+    }
+
+    // Cannot change except on Context/Extension init.
+    bool isValidBindTextureType(TextureType type) const
+    {
+        return mCachedValidBindTextureTypes[type];
+    }
+
+    // Cannot change except on Context/Extension init.
+    bool isValidDrawElementsType(DrawElementsType type) const
+    {
+        return mCachedValidDrawElementsTypes[type];
+    }
+
+    // Places that can trigger updateTransformFeedbackActiveUnpaused:
+    // 1. onActiveTransformFeedbackChange.
+    bool isTransformFeedbackActiveUnpaused() const
+    {
+        return mCachedTransformFeedbackActiveUnpaused;
+    }
+
+    // Cannot change except on Context/Extension init.
+    VertexAttribTypeCase getVertexAttribTypeValidation(VertexAttribType type) const
+    {
+        return mCachedVertexAttribTypesValidation[type];
+    }
+
+    VertexAttribTypeCase getIntegerVertexAttribTypeValidation(VertexAttribType type) const
+    {
+        return mCachedIntegerVertexAttribTypesValidation[type];
+    }
+
+    // Places that can trigger updateActiveShaderStorageBufferIndices:
+    // 1. onProgramExecutableChange.
+    StorageBuffersMask getActiveShaderStorageBufferIndices() const
+    {
+        return mCachedActiveShaderStorageBufferIndices;
+    }
+
+    // Places that can trigger updateActiveImageUnitIndices:
+    // 1. onProgramExecutableChange.
+    const ImageUnitMask &getActiveImageUnitIndices() const { return mCachedActiveImageUnitIndices; }
+
+    // Places that can trigger updateCanDraw:
+    // 1. onProgramExecutableChange.
+    bool getCanDraw() const { return mCachedCanDraw; }
+
+    // State change notifications.
+    void onVertexArrayBindingChange(Context *context);
+    void onProgramExecutableChange(Context *context);
+    void onVertexArrayFormatChange(Context *context);
+    void onVertexArrayBufferContentsChange(Context *context);
+    void onVertexArrayStateChange(Context *context);
+    void onVertexArrayBufferStateChange(Context *context);
+    void onGLES1TextureStateChange(Context *context);
+    void onGLES1ClientStateChange(Context *context);
+    void onDrawFramebufferChange(Context *context);
+    void onActiveTextureChange(Context *context);
+    void onQueryChange(Context *context);
+    void onActiveTransformFeedbackChange(Context *context);
+    void onUniformBufferStateChange(Context *context);
+    void onAtomicCounterBufferStateChange(Context *context);
+    void onShaderStorageBufferStateChange(Context *context);
+    void onBufferBindingChange(Context *context);
+
+  private:
+    bool isCurrentContext(const Context *context, const PrivateStateCache *privateStateCache) const;
+
+    // Cache update functions.
+    void updateActiveAttribsMask(Context *context);
+    void updateVertexElementLimits(Context *context);
+    void updateVertexElementLimitsImpl(Context *context);
+    void updateValidDrawModes(Context *context);
+    void updateValidBindTextureTypes(Context *context);
+    void updateValidDrawElementsTypes(Context *context);
+    void updateBasicDrawStatesError()
+    {
+        mCachedBasicDrawStatesErrorString = kInvalidPointer;
+        mCachedBasicDrawStatesErrorCode   = GL_NO_ERROR;
+    }
+    void updateProgramPipelineError() { mCachedProgramPipelineError = kInvalidPointer; }
+    void updateBasicDrawElementsError() { mCachedBasicDrawElementsError = kInvalidPointer; }
+    void updateTransformFeedbackActiveUnpaused(Context *context);
+    void updateVertexAttribTypesValidation(Context *context);
+    void updateActiveShaderStorageBufferIndices(Context *context);
+    void updateActiveImageUnitIndices(Context *context);
+    void updateCanDraw(Context *context);
+
+    void setValidDrawModes(bool pointsOK,
+                           bool linesOK,
+                           bool trisOK,
+                           bool lineAdjOK,
+                           bool triAdjOK,
+                           bool patchOK);
+
+    intptr_t getBasicDrawStatesErrorImpl(const Context *context,
+                                         const PrivateStateCache *privateStateCache) const;
+    intptr_t getProgramPipelineErrorImpl(const Context *context) const;
+    intptr_t getBasicDrawElementsErrorImpl(const Context *context) const;
+
+    static constexpr intptr_t kInvalidPointer = 1;
+
+    AttributesMask mCachedActiveBufferedAttribsMask;
+    AttributesMask mCachedActiveClientAttribsMask;
+    AttributesMask mCachedActiveDefaultAttribsMask;
+
+    // Given a vertex attribute's stride, the corresponding vertex buffer can fit a number of such
+    // attributes.  A draw call that attempts to use more vertex attributes thus needs to fail (when
+    // robust access is enabled).  The following variables help implement this limit given the
+    // following situations:
+    //
+    // Assume:
+    //
+    // Ni = Number of vertex attributes that can fit in buffer bound to attribute i.
+    // Di = Vertex attribute divisor set for attribute i.
+    // F = Draw calls "first" vertex index
+    // C = Draw calls vertex "count"
+    // B = Instanced draw calls "baseinstance"
+    // P = Instanced draw calls "primcount"
+    //
+    // Then, for each attribute i:
+    //
+    //   If Di == 0 (i.e. non-instanced)
+    //     Vertices [F, F+C) are accessed
+    //     Draw call should fail if F+C > Ni
+    //
+    //   If Di != 0 (i.e. instanced), in a non-instanced draw call:
+    //     Only vertex 0 is accessed - note that a non-zero divisor in a non-instanced draw call
+    //       implies that F is ignored and the vertex index is not incremented.
+    //     Draw call should fail if Ni < 1
+    //
+    //   If Di != 0, in an instanced draw call:
+    //     Vertices [B, B+ceil(P/Di)) are accessed
+    //     Draw call should fail if B+ceil(P/Di) > Ni
+    //
+    // To avoid needing to iterate over all attributes in the hot paths, the following is
+    // calculated:
+    //
+    // Non-instanced limit: min(Ni) for all non-instanced attributes.  At draw time F+C <= min(Ni)
+    // is validated.
+    // Instanced limit: min(Ni*Di) for all instanced attributes.  At draw time, B+P <= min(Ni*Di) is
+    // validated (the math works out, try with an example!)
+    //
+    // For instanced attributes in a non-instanced draw call, need to check that min(Ni) > 0.
+    // Evaluating min(Ni*DI) > 0 produces the same result though, so the instanced limit is used
+    // there too.
+    //
+    // If there are no instanced attributes, the non-instanced limit is set to infinity.  If there
+    // are no instanced attributes, the instanced limits are set to infinity.
+    GLint64 mCachedNonInstancedVertexElementLimit;
+    GLint64 mCachedInstancedVertexElementLimit;
+
+    mutable intptr_t mCachedBasicDrawStatesErrorString;
+    mutable GLenum mCachedBasicDrawStatesErrorCode;
+    mutable intptr_t mCachedBasicDrawElementsError;
+    // mCachedProgramPipelineError checks only the
+    // current-program-exists subset of mCachedBasicDrawStatesError.
+    // Therefore, mCachedProgramPipelineError follows
+    // mCachedBasicDrawStatesError in that if mCachedBasicDrawStatesError is
+    // no-error, so is mCachedProgramPipelineError.  Otherwise, if
+    // mCachedBasicDrawStatesError is in error, the state of
+    // mCachedProgramPipelineError can be no-error or also in error, or
+    // unknown due to early exiting.
+    mutable intptr_t mCachedProgramPipelineError;
+    bool mCachedHasAnyEnabledClientAttrib;
+    bool mCachedTransformFeedbackActiveUnpaused;
+    StorageBuffersMask mCachedActiveShaderStorageBufferIndices;
+    ImageUnitMask mCachedActiveImageUnitIndices;
+
+    // Reserve an extra slot at the end of these maps for invalid enum.
+    angle::PackedEnumMap<PrimitiveMode, bool, angle::EnumSize<PrimitiveMode>() + 1>
+        mCachedValidDrawModes;
+    angle::PackedEnumMap<TextureType, bool, angle::EnumSize<TextureType>() + 1>
+        mCachedValidBindTextureTypes;
+    angle::PackedEnumMap<DrawElementsType, bool, angle::EnumSize<DrawElementsType>() + 1>
+        mCachedValidDrawElementsTypes;
+    angle::PackedEnumMap<VertexAttribType,
+                         VertexAttribTypeCase,
+                         angle::EnumSize<VertexAttribType>() + 1>
+        mCachedVertexAttribTypesValidation;
+    angle::PackedEnumMap<VertexAttribType,
+                         VertexAttribTypeCase,
+                         angle::EnumSize<VertexAttribType>() + 1>
+        mCachedIntegerVertexAttribTypesValidation;
+
+    bool mCachedCanDraw;
+};
+
+using VertexArrayMap       = ResourceMap<VertexArray, VertexArrayID>;
+using QueryMap             = ResourceMap<Query, QueryID>;
+using TransformFeedbackMap = ResourceMap<TransformFeedback, TransformFeedbackID>;
+
+class Context final : public egl::LabeledObject, angle::NonCopyable, public angle::ObserverInterface
+{
+  public:
+    Context(egl::Display *display,
             const egl::Config *config,
             const Context *shareContext,
             TextureManager *shareTextures,
+            SemaphoreManager *shareSemaphores,
+            egl::ContextMutex *sharedContextMutex,
             MemoryProgramCache *memoryProgramCache,
+            MemoryShaderCache *memoryShaderCache,
             const egl::AttributeMap &attribs,
             const egl::DisplayExtensions &displayExtensions,
-            bool robustResourceInit);
+            const egl::ClientExtensions &clientExtensions);
+
+    // Use for debugging.
+    ContextID id() const { return mState.getContextID(); }
+
+    egl::Error initialize();
 
     egl::Error onDestroy(const egl::Display *display);
     ~Context() override;
 
-    egl::Error makeCurrent(egl::Display *display, egl::Surface *surface);
-    egl::Error releaseSurface(const egl::Display *display);
+    void setLabel(EGLLabelKHR label) override;
+    EGLLabelKHR getLabel() const override;
 
-    // These create  and destroy methods are merely pass-throughs to
-    // ResourceManager, which owns these object types
-    GLuint createBuffer();
-    GLuint createShader(GLenum type);
-    GLuint createProgram();
-    GLuint createTexture();
-    GLuint createRenderbuffer();
-    GLuint createSampler();
-    GLuint createTransformFeedback();
-    GLsync createFenceSync();
-    GLuint createPaths(GLsizei range);
+    egl::Error makeCurrent(egl::Display *display,
+                           egl::Surface *drawSurface,
+                           egl::Surface *readSurface);
+    egl::Error unMakeCurrent(const egl::Display *display);
 
-    void deleteBuffer(GLuint buffer);
-    void deleteShader(GLuint shader);
-    void deleteProgram(GLuint program);
-    void deleteTexture(GLuint texture);
-    void deleteRenderbuffer(GLuint renderbuffer);
-    void deleteSampler(GLuint sampler);
-    void deleteTransformFeedback(GLuint transformFeedback);
-    void deleteFenceSync(GLsync fenceSync);
-    void deletePaths(GLuint first, GLsizei range);
+    // These create and destroy methods pass through to ResourceManager, which owns these objects.
+    BufferID createBuffer();
+    TextureID createTexture();
+    RenderbufferID createRenderbuffer();
+    ProgramPipelineID createProgramPipeline();
+    MemoryObjectID createMemoryObject();
+    SemaphoreID createSemaphore();
 
-    // CHROMIUM_path_rendering
-    bool hasPathData(GLuint path) const;
-    bool hasPath(GLuint path) const;
-    void setPathCommands(GLuint path,
-                         GLsizei numCommands,
-                         const GLubyte *commands,
-                         GLsizei numCoords,
-                         GLenum coordType,
-                         const void *coords);
-    void setPathParameterf(GLuint path, GLenum pname, GLfloat value);
-    void getPathParameterfv(GLuint path, GLenum pname, GLfloat *value) const;
-    void setPathStencilFunc(GLenum func, GLint ref, GLuint mask);
+    void deleteBuffer(BufferID buffer);
+    void deleteTexture(TextureID texture);
+    void deleteRenderbuffer(RenderbufferID renderbuffer);
+    void deleteProgramPipeline(ProgramPipelineID pipeline);
+    void deleteMemoryObject(MemoryObjectID memoryObject);
+    void deleteSemaphore(SemaphoreID semaphore);
 
-    // Framebuffers are owned by the Context, so these methods do not pass through
-    GLuint createFramebuffer();
-    void deleteFramebuffer(GLuint framebuffer);
+    void bindReadFramebuffer(FramebufferID framebufferHandle);
+    void bindDrawFramebuffer(FramebufferID framebufferHandle);
 
-    // NV Fences are owned by the Context.
-    GLuint createFenceNV();
-    void deleteFenceNV(GLuint fence);
+    Buffer *getBuffer(BufferID handle) const;
+    FenceNV *getFenceNV(FenceNVID handle) const;
+    Sync *getSync(SyncID syncPacked) const;
+    ANGLE_INLINE Texture *getTexture(TextureID handle) const
+    {
+        return mState.mTextureManager->getTexture(handle);
+    }
 
-    // Queries are owned by the Context;
-    GLuint createQuery();
-    void deleteQuery(GLuint query);
+    Framebuffer *getFramebuffer(FramebufferID handle) const;
+    Renderbuffer *getRenderbuffer(RenderbufferID handle) const;
+    VertexArray *getVertexArray(VertexArrayID handle) const;
+    Sampler *getSampler(SamplerID handle) const;
+    Query *getOrCreateQuery(QueryID handle, QueryType type);
+    Query *getQuery(QueryID handle) const;
+    TransformFeedback *getTransformFeedback(TransformFeedbackID handle) const;
+    ProgramPipeline *getProgramPipeline(ProgramPipelineID handle) const;
+    MemoryObject *getMemoryObject(MemoryObjectID handle) const;
+    Semaphore *getSemaphore(SemaphoreID handle) const;
 
-    // Vertex arrays are owned by the Context
-    GLuint createVertexArray();
-    void deleteVertexArray(GLuint vertexArray);
-
-    void bindArrayBuffer(GLuint bufferHandle);
-    void bindElementArrayBuffer(GLuint bufferHandle);
-    void bindTexture(GLenum target, GLuint handle);
-    void bindReadFramebuffer(GLuint framebufferHandle);
-    void bindDrawFramebuffer(GLuint framebufferHandle);
-    void bindVertexArray(GLuint vertexArrayHandle);
-    void bindVertexBuffer(GLuint bindingIndex,
-                          GLuint bufferHandle,
-                          GLintptr offset,
-                          GLsizei stride);
-    void bindSampler(GLuint textureUnit, GLuint samplerHandle);
-    void bindImageTexture(GLuint unit,
-                          GLuint texture,
-                          GLint level,
-                          GLboolean layered,
-                          GLint layer,
-                          GLenum access,
-                          GLenum format);
-    void bindGenericUniformBuffer(GLuint bufferHandle);
-    void bindIndexedUniformBuffer(GLuint bufferHandle,
-                                  GLuint index,
-                                  GLintptr offset,
-                                  GLsizeiptr size);
-    void bindGenericTransformFeedbackBuffer(GLuint bufferHandle);
-    void bindIndexedTransformFeedbackBuffer(GLuint bufferHandle,
-                                            GLuint index,
-                                            GLintptr offset,
-                                            GLsizeiptr size);
-    void bindGenericAtomicCounterBuffer(GLuint bufferHandle);
-    void bindIndexedAtomicCounterBuffer(GLuint bufferHandle,
-                                        GLuint index,
-                                        GLintptr offset,
-                                        GLsizeiptr size);
-    void bindGenericShaderStorageBuffer(GLuint bufferHandle);
-    void bindIndexedShaderStorageBuffer(GLuint bufferHandle,
-                                        GLuint index,
-                                        GLintptr offset,
-                                        GLsizeiptr size);
-    void bindCopyReadBuffer(GLuint bufferHandle);
-    void bindCopyWriteBuffer(GLuint bufferHandle);
-    void bindPixelPackBuffer(GLuint bufferHandle);
-    void bindPixelUnpackBuffer(GLuint bufferHandle);
-    void useProgram(GLuint program);
-    void bindTransformFeedback(GLuint transformFeedbackHandle);
-    void bindDrawIndirectBuffer(GLuint bufferHandle);
-
-    Error beginQuery(GLenum target, GLuint query);
-    Error endQuery(GLenum target);
-    Error queryCounter(GLuint id, GLenum target);
-    void getQueryiv(GLenum target, GLenum pname, GLint *params);
-    void getQueryObjectiv(GLuint id, GLenum pname, GLint *params);
-    void getQueryObjectuiv(GLuint id, GLenum pname, GLuint *params);
-    void getQueryObjecti64v(GLuint id, GLenum pname, GLint64 *params);
-    void getQueryObjectui64v(GLuint id, GLenum pname, GLuint64 *params);
-
-    void setVertexAttribDivisor(GLuint index, GLuint divisor);
-    void setVertexBindingDivisor(GLuint bindingIndex, GLuint divisor);
-
-    void getBufferParameteriv(GLenum target, GLenum pname, GLint *params);
-    void getFramebufferAttachmentParameteriv(GLenum target,
-                                             GLenum attachment,
-                                             GLenum pname,
-                                             GLint *params);
-    void getRenderbufferParameteriv(GLenum target, GLenum pname, GLint *params);
-
-    void getTexParameterfv(GLenum target, GLenum pname, GLfloat *params);
-    void getTexParameteriv(GLenum target, GLenum pname, GLint *params);
-    void texParameterf(GLenum target, GLenum pname, GLfloat param);
-    void texParameterfv(GLenum target, GLenum pname, const GLfloat *params);
-    void texParameteri(GLenum target, GLenum pname, GLint param);
-    void texParameteriv(GLenum target, GLenum pname, const GLint *params);
-
-    void samplerParameteri(GLuint sampler, GLenum pname, GLint param);
-    void samplerParameteriv(GLuint sampler, GLenum pname, const GLint *param);
-    void samplerParameterf(GLuint sampler, GLenum pname, GLfloat param);
-    void samplerParameterfv(GLuint sampler, GLenum pname, const GLfloat *param);
-
-    void getSamplerParameteriv(GLuint sampler, GLenum pname, GLint *params);
-    void getSamplerParameterfv(GLuint sampler, GLenum pname, GLfloat *params);
-
-    void programParameteri(GLuint program, GLenum pname, GLint value);
-
-    GLuint getProgramResourceIndex(GLuint program, GLenum programInterface, const GLchar *name);
-    void getProgramResourceName(GLuint program,
-                                GLenum programInterface,
-                                GLuint index,
-                                GLsizei bufSize,
-                                GLsizei *length,
-                                GLchar *name);
-    GLint getProgramResourceLocation(GLuint program, GLenum programInterface, const GLchar *name);
-
-    Buffer *getBuffer(GLuint handle) const;
-    FenceNV *getFenceNV(GLuint handle);
-    FenceSync *getFenceSync(GLsync handle) const;
-    Texture *getTexture(GLuint handle) const;
-    Framebuffer *getFramebuffer(GLuint handle) const;
-    Renderbuffer *getRenderbuffer(GLuint handle) const;
-    VertexArray *getVertexArray(GLuint handle) const;
-    Sampler *getSampler(GLuint handle) const;
-    Query *getQuery(GLuint handle, bool create, GLenum type);
-    Query *getQuery(GLuint handle) const;
-    TransformFeedback *getTransformFeedback(GLuint handle) const;
-    void objectLabel(GLenum identifier, GLuint name, GLsizei length, const GLchar *label);
-    void objectPtrLabel(const void *ptr, GLsizei length, const GLchar *label);
-    void getObjectLabel(GLenum identifier,
-                        GLuint name,
-                        GLsizei bufSize,
-                        GLsizei *length,
-                        GLchar *label) const;
-    void getObjectPtrLabel(const void *ptr, GLsizei bufSize, GLsizei *length, GLchar *label) const;
-
-    Texture *getTargetTexture(GLenum target) const;
-    Texture *getSamplerTexture(unsigned int sampler, GLenum type) const;
+    Texture *getTextureByType(TextureType type) const;
+    Texture *getTextureByTarget(TextureTarget target) const;
+    Texture *getSamplerTexture(unsigned int sampler, TextureType type) const;
 
     Compiler *getCompiler() const;
 
-    bool isSampler(GLuint samplerName) const;
+    bool isVertexArrayGenerated(VertexArrayID vertexArray) const;
+    bool isTransformFeedbackGenerated(TransformFeedbackID transformFeedback) const;
 
-    bool isVertexArrayGenerated(GLuint vertexArray);
-    bool isTransformFeedbackGenerated(GLuint vertexArray);
+    bool isExternal() const { return mState.isExternal(); }
 
-    void getBooleanv(GLenum pname, GLboolean *params);
-    void getBooleanvImpl(GLenum pname, GLboolean *params);
-    void getFloatv(GLenum pname, GLfloat *params);
-    void getFloatvImpl(GLenum pname, GLfloat *params);
-    void getIntegerv(GLenum pname, GLint *params);
-    void getIntegervImpl(GLenum pname, GLint *params);
-    void getInteger64v(GLenum pname, GLint64 *params);
-    void getPointerv(GLenum pname, void **params) const;
-    void getBooleani_v(GLenum target, GLuint index, GLboolean *data);
-    void getIntegeri_v(GLenum target, GLuint index, GLint *data);
-    void getInteger64i_v(GLenum target, GLuint index, GLint64 *data);
+    void getBooleanvImpl(GLenum pname, GLboolean *params) const;
+    void getFloatvImpl(GLenum pname, GLfloat *params) const;
+    void getIntegervImpl(GLenum pname, GLint *params) const;
+    void getInteger64vImpl(GLenum pname, GLint64 *params) const;
+    void getIntegerVertexAttribImpl(GLenum pname, GLenum attribpname, GLint *params) const;
+    void getVertexAttribivImpl(GLuint index, GLenum pname, GLint *params) const;
 
-    void activeTexture(GLenum texture);
-    void blendColor(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha);
-    void blendEquation(GLenum mode);
-    void blendEquationSeparate(GLenum modeRGB, GLenum modeAlpha);
-    void blendFunc(GLenum sfactor, GLenum dfactor);
-    void blendFuncSeparate(GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha);
-    void clearColor(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha);
-    void clearDepthf(GLfloat depth);
-    void clearStencil(GLint s);
-    void colorMask(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha);
-    void cullFace(GLenum mode);
-    void depthFunc(GLenum func);
-    void depthMask(GLboolean flag);
-    void depthRangef(GLfloat zNear, GLfloat zFar);
-    void disable(GLenum cap);
-    void disableVertexAttribArray(GLuint index);
-    void enable(GLenum cap);
-    void enableVertexAttribArray(GLuint index);
-    void frontFace(GLenum mode);
-    void hint(GLenum target, GLenum mode);
-    void lineWidth(GLfloat width);
-    void pixelStorei(GLenum pname, GLint param);
-    void polygonOffset(GLfloat factor, GLfloat units);
-    void sampleCoverage(GLfloat value, GLboolean invert);
-    void scissor(GLint x, GLint y, GLsizei width, GLsizei height);
-    void stencilFuncSeparate(GLenum face, GLenum func, GLint ref, GLuint mask);
-    void stencilMaskSeparate(GLenum face, GLuint mask);
-    void stencilOpSeparate(GLenum face, GLenum fail, GLenum zfail, GLenum zpass);
-    void vertexAttrib1f(GLuint index, GLfloat x);
-    void vertexAttrib1fv(GLuint index, const GLfloat *values);
-    void vertexAttrib2f(GLuint index, GLfloat x, GLfloat y);
-    void vertexAttrib2fv(GLuint index, const GLfloat *values);
-    void vertexAttrib3f(GLuint index, GLfloat x, GLfloat y, GLfloat z);
-    void vertexAttrib3fv(GLuint index, const GLfloat *values);
-    void vertexAttrib4f(GLuint index, GLfloat x, GLfloat y, GLfloat z, GLfloat w);
-    void vertexAttrib4fv(GLuint index, const GLfloat *values);
-    void vertexAttribFormat(GLuint attribIndex,
-                            GLint size,
-                            GLenum type,
-                            GLboolean normalized,
-                            GLuint relativeOffset);
-    void vertexAttribIFormat(GLuint attribIndex, GLint size, GLenum type, GLuint relativeOffset);
-    void vertexAttribBinding(GLuint attribIndex, GLuint bindingIndex);
-    void vertexAttribPointer(GLuint index,
-                             GLint size,
-                             GLenum type,
-                             GLboolean normalized,
-                             GLsizei stride,
-                             const void *ptr);
-    void vertexAttribIPointer(GLuint index,
-                              GLint size,
-                              GLenum type,
-                              GLsizei stride,
-                              const void *pointer);
-    void viewport(GLint x, GLint y, GLsizei width, GLsizei height);
+    // Framebuffers are owned by the Context, so these methods do not pass through
+    FramebufferID createFramebuffer();
+    void deleteFramebuffer(FramebufferID framebuffer);
 
-    void vertexAttribI4i(GLuint index, GLint x, GLint y, GLint z, GLint w);
-    void vertexAttribI4ui(GLuint index, GLuint x, GLuint y, GLuint z, GLuint w);
-    void vertexAttribI4iv(GLuint index, const GLint *v);
-    void vertexAttribI4uiv(GLuint index, const GLuint *v);
-    void getVertexAttribiv(GLuint index, GLenum pname, GLint *params);
-    void getVertexAttribfv(GLuint index, GLenum pname, GLfloat *params);
-    void getVertexAttribIiv(GLuint index, GLenum pname, GLint *params);
-    void getVertexAttribIuiv(GLuint index, GLenum pname, GLuint *params);
-    void getVertexAttribPointerv(GLuint index, GLenum pname, void **pointer);
+    bool hasActiveTransformFeedback(ShaderProgramID program) const;
 
-    void debugMessageControl(GLenum source,
-                             GLenum type,
-                             GLenum severity,
-                             GLsizei count,
-                             const GLuint *ids,
-                             GLboolean enabled);
-    void debugMessageInsert(GLenum source,
-                            GLenum type,
-                            GLuint id,
-                            GLenum severity,
-                            GLsizei length,
-                            const GLchar *buf);
-    void debugMessageCallback(GLDEBUGPROCKHR callback, const void *userParam);
-    GLuint getDebugMessageLog(GLuint count,
-                              GLsizei bufSize,
-                              GLenum *sources,
-                              GLenum *types,
-                              GLuint *ids,
-                              GLenum *severities,
-                              GLsizei *lengths,
-                              GLchar *messageLog);
-    void pushDebugGroup(GLenum source, GLuint id, GLsizei length, const GLchar *message);
-    void popDebugGroup();
+    // GLES entry point interface
+    ANGLE_GLES_1_0_CONTEXT_API
+    ANGLE_GLES_2_0_CONTEXT_API
+    ANGLE_GLES_3_0_CONTEXT_API
+    ANGLE_GLES_3_1_CONTEXT_API
+    ANGLE_GLES_3_2_CONTEXT_API
+    ANGLE_GLES_EXT_CONTEXT_API
 
-    void clear(GLbitfield mask);
-    void clearBufferfv(GLenum buffer, GLint drawbuffer, const GLfloat *values);
-    void clearBufferuiv(GLenum buffer, GLint drawbuffer, const GLuint *values);
-    void clearBufferiv(GLenum buffer, GLint drawbuffer, const GLint *values);
-    void clearBufferfi(GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil);
+    angle::Result handleNoopDrawEvent();
 
-    void drawArrays(GLenum mode, GLint first, GLsizei count);
-    void drawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei instanceCount);
+    // Consumes an error.
+    void handleError(GLenum errorCode,
+                     const char *message,
+                     const char *file,
+                     const char *function,
+                     unsigned int line);
 
-    void drawElements(GLenum mode, GLsizei count, GLenum type, const void *indices);
-    void drawElementsInstanced(GLenum mode,
-                               GLsizei count,
-                               GLenum type,
-                               const void *indices,
-                               GLsizei instances);
-    void drawRangeElements(GLenum mode,
-                           GLuint start,
-                           GLuint end,
-                           GLsizei count,
-                           GLenum type,
-                           const void *indices);
-    void drawArraysIndirect(GLenum mode, const void *indirect);
-    void drawElementsIndirect(GLenum mode, GLenum type, const void *indirect);
+    bool isResetNotificationEnabled() const;
 
-    void blitFramebuffer(GLint srcX0,
-                         GLint srcY0,
-                         GLint srcX1,
-                         GLint srcY1,
-                         GLint dstX0,
-                         GLint dstY0,
-                         GLint dstX1,
-                         GLint dstY1,
-                         GLbitfield mask,
-                         GLenum filter);
+    bool isRobustnessEnabled() const { return mState.hasRobustAccess(); }
 
-    void readPixels(GLint x,
-                    GLint y,
-                    GLsizei width,
-                    GLsizei height,
-                    GLenum format,
-                    GLenum type,
-                    void *pixels);
-
-    void copyTexImage2D(GLenum target,
-                        GLint level,
-                        GLenum internalformat,
-                        GLint x,
-                        GLint y,
-                        GLsizei width,
-                        GLsizei height,
-                        GLint border);
-
-    void copyTexSubImage2D(GLenum target,
-                           GLint level,
-                           GLint xoffset,
-                           GLint yoffset,
-                           GLint x,
-                           GLint y,
-                           GLsizei width,
-                           GLsizei height);
-
-    void copyTexSubImage3D(GLenum target,
-                           GLint level,
-                           GLint xoffset,
-                           GLint yoffset,
-                           GLint zoffset,
-                           GLint x,
-                           GLint y,
-                           GLsizei width,
-                           GLsizei height);
-
-    void framebufferTexture2D(GLenum target,
-                              GLenum attachment,
-                              GLenum textarget,
-                              GLuint texture,
-                              GLint level);
-
-    void framebufferRenderbuffer(GLenum target,
-                                 GLenum attachment,
-                                 GLenum renderbuffertarget,
-                                 GLuint renderbuffer);
-
-    void framebufferTextureLayer(GLenum target,
-                                 GLenum attachment,
-                                 GLuint texture,
-                                 GLint level,
-                                 GLint layer);
-    void framebufferTextureMultiviewLayeredANGLE(GLenum target,
-                                                 GLenum attachment,
-                                                 GLuint texture,
-                                                 GLint level,
-                                                 GLint baseViewIndex,
-                                                 GLsizei numViews);
-    void framebufferTextureMultiviewSideBySideANGLE(GLenum target,
-                                                    GLenum attachment,
-                                                    GLuint texture,
-                                                    GLint level,
-                                                    GLsizei numViews,
-                                                    const GLint *viewportOffsets);
-
-    void drawBuffers(GLsizei n, const GLenum *bufs);
-    void readBuffer(GLenum mode);
-
-    void discardFramebuffer(GLenum target, GLsizei numAttachments, const GLenum *attachments);
-    void invalidateFramebuffer(GLenum target, GLsizei numAttachments, const GLenum *attachments);
-    void invalidateSubFramebuffer(GLenum target,
-                                  GLsizei numAttachments,
-                                  const GLenum *attachments,
-                                  GLint x,
-                                  GLint y,
-                                  GLsizei width,
-                                  GLsizei height);
-
-    void texImage2D(GLenum target,
-                    GLint level,
-                    GLint internalformat,
-                    GLsizei width,
-                    GLsizei height,
-                    GLint border,
-                    GLenum format,
-                    GLenum type,
-                    const void *pixels);
-    void texImage3D(GLenum target,
-                    GLint level,
-                    GLint internalformat,
-                    GLsizei width,
-                    GLsizei height,
-                    GLsizei depth,
-                    GLint border,
-                    GLenum format,
-                    GLenum type,
-                    const void *pixels);
-    void texSubImage2D(GLenum target,
-                       GLint level,
-                       GLint xoffset,
-                       GLint yoffset,
-                       GLsizei width,
-                       GLsizei height,
-                       GLenum format,
-                       GLenum type,
-                       const void *pixels);
-    void texSubImage3D(GLenum target,
-                       GLint level,
-                       GLint xoffset,
-                       GLint yoffset,
-                       GLint zoffset,
-                       GLsizei width,
-                       GLsizei height,
-                       GLsizei depth,
-                       GLenum format,
-                       GLenum type,
-                       const void *pixels);
-    void compressedTexImage2D(GLenum target,
-                              GLint level,
-                              GLenum internalformat,
-                              GLsizei width,
-                              GLsizei height,
-                              GLint border,
-                              GLsizei imageSize,
-                              const void *data);
-    void compressedTexImage3D(GLenum target,
-                              GLint level,
-                              GLenum internalformat,
-                              GLsizei width,
-                              GLsizei height,
-                              GLsizei depth,
-                              GLint border,
-                              GLsizei imageSize,
-                              const void *data);
-    void compressedTexSubImage2D(GLenum target,
-                                 GLint level,
-                                 GLint xoffset,
-                                 GLint yoffset,
-                                 GLsizei width,
-                                 GLsizei height,
-                                 GLenum format,
-                                 GLsizei imageSize,
-                                 const void *data);
-    void compressedTexSubImage3D(GLenum target,
-                                 GLint level,
-                                 GLint xoffset,
-                                 GLint yoffset,
-                                 GLint zoffset,
-                                 GLsizei width,
-                                 GLsizei height,
-                                 GLsizei depth,
-                                 GLenum format,
-                                 GLsizei imageSize,
-                                 const void *data);
-    void copyTextureCHROMIUM(GLuint sourceId,
-                             GLint sourceLevel,
-                             GLenum destTarget,
-                             GLuint destId,
-                             GLint destLevel,
-                             GLint internalFormat,
-                             GLenum destType,
-                             GLboolean unpackFlipY,
-                             GLboolean unpackPremultiplyAlpha,
-                             GLboolean unpackUnmultiplyAlpha);
-    void copySubTextureCHROMIUM(GLuint sourceId,
-                                GLint sourceLevel,
-                                GLenum destTarget,
-                                GLuint destId,
-                                GLint destLevel,
-                                GLint xoffset,
-                                GLint yoffset,
-                                GLint x,
-                                GLint y,
-                                GLsizei width,
-                                GLsizei height,
-                                GLboolean unpackFlipY,
-                                GLboolean unpackPremultiplyAlpha,
-                                GLboolean unpackUnmultiplyAlpha);
-    void compressedCopyTextureCHROMIUM(GLuint sourceId, GLuint destId);
-
-    void generateMipmap(GLenum target);
-
-    void flush();
-    void finish();
-
-    void getBufferPointerv(GLenum target, GLenum pname, void **params);
-    void *mapBuffer(GLenum target, GLenum access);
-    GLboolean unmapBuffer(GLenum target);
-    void *mapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access);
-    void flushMappedBufferRange(GLenum target, GLintptr offset, GLsizeiptr length);
-
-    void beginTransformFeedback(GLenum primitiveMode);
-
-    bool hasActiveTransformFeedback(GLuint program) const;
-
-    void insertEventMarker(GLsizei length, const char *marker);
-    void pushGroupMarker(GLsizei length, const char *marker);
-    void popGroupMarker();
-
-    void bindUniformLocation(GLuint program, GLint location, const GLchar *name);
-    void renderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, GLsizei height);
-    void renderbufferStorageMultisample(GLenum target,
-                                        GLsizei samples,
-                                        GLenum internalformat,
-                                        GLsizei width,
-                                        GLsizei height);
-
-    void getSynciv(GLsync sync, GLenum pname, GLsizei bufSize, GLsizei *length, GLint *values);
-
-    // CHROMIUM_framebuffer_mixed_samples
-    void setCoverageModulation(GLenum components);
-
-    // CHROMIUM_path_rendering
-    void loadPathRenderingMatrix(GLenum matrixMode, const GLfloat *matrix);
-    void loadPathRenderingIdentityMatrix(GLenum matrixMode);
-    void stencilFillPath(GLuint path, GLenum fillMode, GLuint mask);
-    void stencilStrokePath(GLuint path, GLint reference, GLuint mask);
-    void coverFillPath(GLuint path, GLenum coverMode);
-    void coverStrokePath(GLuint path, GLenum coverMode);
-    void stencilThenCoverFillPath(GLuint path, GLenum fillMode, GLuint mask, GLenum coverMode);
-    void stencilThenCoverStrokePath(GLuint path, GLint reference, GLuint mask, GLenum coverMode);
-    void coverFillPathInstanced(GLsizei numPaths,
-                                GLenum pathNameType,
-                                const void *paths,
-                                GLuint pathBase,
-                                GLenum coverMode,
-                                GLenum transformType,
-                                const GLfloat *transformValues);
-    void coverStrokePathInstanced(GLsizei numPaths,
-                                  GLenum pathNameType,
-                                  const void *paths,
-                                  GLuint pathBase,
-                                  GLenum coverMode,
-                                  GLenum transformType,
-                                  const GLfloat *transformValues);
-    void stencilFillPathInstanced(GLsizei numPaths,
-                                  GLenum pathNameType,
-                                  const void *paths,
-                                  GLuint pathBAse,
-                                  GLenum fillMode,
-                                  GLuint mask,
-                                  GLenum transformType,
-                                  const GLfloat *transformValues);
-    void stencilStrokePathInstanced(GLsizei numPaths,
-                                    GLenum pathNameType,
-                                    const void *paths,
-                                    GLuint pathBase,
-                                    GLint reference,
-                                    GLuint mask,
-                                    GLenum transformType,
-                                    const GLfloat *transformValues);
-    void stencilThenCoverFillPathInstanced(GLsizei numPaths,
-                                           GLenum pathNameType,
-                                           const void *paths,
-                                           GLuint pathBase,
-                                           GLenum fillMode,
-                                           GLuint mask,
-                                           GLenum coverMode,
-                                           GLenum transformType,
-                                           const GLfloat *transformValues);
-    void stencilThenCoverStrokePathInstanced(GLsizei numPaths,
-                                             GLenum pathNameType,
-                                             const void *paths,
-                                             GLuint pathBase,
-                                             GLint reference,
-                                             GLuint mask,
-                                             GLenum coverMode,
-                                             GLenum transformType,
-                                             const GLfloat *transformValues);
-    void bindFragmentInputLocation(GLuint program, GLint location, const GLchar *name);
-    void programPathFragmentInputGen(GLuint program,
-                                     GLint location,
-                                     GLenum genMode,
-                                     GLint components,
-                                     const GLfloat *coeffs);
-
-    void bufferData(GLenum target, GLsizeiptr size, const void *data, GLenum usage);
-    void bufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void *data);
-    void attachShader(GLuint program, GLuint shader);
-    void bindAttribLocation(GLuint program, GLuint index, const GLchar *name);
-    void bindBuffer(GLenum target, GLuint buffer);
-    void bindBufferBase(GLenum target, GLuint index, GLuint buffer);
-    void bindBufferRange(GLenum target,
-                         GLuint index,
-                         GLuint buffer,
-                         GLintptr offset,
-                         GLsizeiptr size);
-    void bindFramebuffer(GLenum target, GLuint framebuffer);
-    void bindRenderbuffer(GLenum target, GLuint renderbuffer);
-
-    void texStorage2DMultisample(GLenum target,
-                                 GLsizei samples,
-                                 GLenum internalformat,
-                                 GLsizei width,
-                                 GLsizei height,
-                                 GLboolean fixedsamplelocations);
-
-    void getMultisamplefv(GLenum pname, GLuint index, GLfloat *val);
-
-    void copyBufferSubData(GLenum readTarget,
-                           GLenum writeTarget,
-                           GLintptr readOffset,
-                           GLintptr writeOffset,
-                           GLsizeiptr size);
-
-    GLenum checkFramebufferStatus(GLenum target);
-    void compileShader(GLuint shader);
-    void deleteBuffers(GLsizei n, const GLuint *buffers);
-    void deleteFramebuffers(GLsizei n, const GLuint *framebuffers);
-    void deleteRenderbuffers(GLsizei n, const GLuint *renderbuffers);
-    void deleteTextures(GLsizei n, const GLuint *textures);
-    void detachShader(GLuint program, GLuint shader);
-    void genBuffers(GLsizei n, GLuint *buffers);
-    void genFramebuffers(GLsizei n, GLuint *framebuffers);
-    void genRenderbuffers(GLsizei n, GLuint *renderbuffers);
-    void genTextures(GLsizei n, GLuint *textures);
-    void getActiveAttrib(GLuint program,
-                         GLuint index,
-                         GLsizei bufsize,
-                         GLsizei *length,
-                         GLint *size,
-                         GLenum *type,
-                         GLchar *name);
-    void getActiveUniform(GLuint program,
-                          GLuint index,
-                          GLsizei bufsize,
-                          GLsizei *length,
-                          GLint *size,
-                          GLenum *type,
-                          GLchar *name);
-    void getAttachedShaders(GLuint program, GLsizei maxcount, GLsizei *count, GLuint *shaders);
-    GLint getAttribLocation(GLuint program, const GLchar *name);
-    void getProgramiv(GLuint program, GLenum pname, GLint *params);
-    void getProgramInfoLog(GLuint program, GLsizei bufsize, GLsizei *length, GLchar *infolog);
-    void getShaderiv(GLuint shader, GLenum pname, GLint *params);
-    void getShaderInfoLog(GLuint shader, GLsizei bufsize, GLsizei *length, GLchar *infolog);
-    void getShaderPrecisionFormat(GLenum shadertype,
-                                  GLenum precisiontype,
-                                  GLint *range,
-                                  GLint *precision);
-    void getShaderSource(GLuint shader, GLsizei bufsize, GLsizei *length, GLchar *source);
-    void getUniformfv(GLuint program, GLint location, GLfloat *params);
-    void getUniformiv(GLuint program, GLint location, GLint *params);
-    GLint getUniformLocation(GLuint program, const GLchar *name);
-    GLboolean isBuffer(GLuint buffer);
-    GLboolean isEnabled(GLenum cap);
-    GLboolean isFramebuffer(GLuint framebuffer);
-    GLboolean isProgram(GLuint program);
-    GLboolean isRenderbuffer(GLuint renderbuffer);
-    GLboolean isShader(GLuint shader);
-    GLboolean isTexture(GLuint texture);
-    void linkProgram(GLuint program);
-    void releaseShaderCompiler();
-    void shaderBinary(GLsizei n,
-                      const GLuint *shaders,
-                      GLenum binaryformat,
-                      const void *binary,
-                      GLsizei length);
-    void shaderSource(GLuint shader,
-                      GLsizei count,
-                      const GLchar *const *string,
-                      const GLint *length);
-    void stencilFunc(GLenum func, GLint ref, GLuint mask);
-    void stencilMask(GLuint mask);
-    void stencilOp(GLenum fail, GLenum zfail, GLenum zpass);
-    void uniform1f(GLint location, GLfloat x);
-    void uniform1fv(GLint location, GLsizei count, const GLfloat *v);
-    void uniform1i(GLint location, GLint x);
-    void uniform1iv(GLint location, GLsizei count, const GLint *v);
-    void uniform2f(GLint location, GLfloat x, GLfloat y);
-    void uniform2fv(GLint location, GLsizei count, const GLfloat *v);
-    void uniform2i(GLint location, GLint x, GLint y);
-    void uniform2iv(GLint location, GLsizei count, const GLint *v);
-    void uniform3f(GLint location, GLfloat x, GLfloat y, GLfloat z);
-    void uniform3fv(GLint location, GLsizei count, const GLfloat *v);
-    void uniform3i(GLint location, GLint x, GLint y, GLint z);
-    void uniform3iv(GLint location, GLsizei count, const GLint *v);
-    void uniform4f(GLint location, GLfloat x, GLfloat y, GLfloat z, GLfloat w);
-    void uniform4fv(GLint location, GLsizei count, const GLfloat *v);
-    void uniform4i(GLint location, GLint x, GLint y, GLint z, GLint w);
-    void uniform4iv(GLint location, GLsizei count, const GLint *v);
-    void uniformMatrix2fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value);
-    void uniformMatrix3fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value);
-    void uniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value);
-    void validateProgram(GLuint program);
-
-    void getProgramBinary(GLuint program,
-                          GLsizei bufSize,
-                          GLsizei *length,
-                          GLenum *binaryFormat,
-                          void *binary);
-    void programBinary(GLuint program, GLenum binaryFormat, const void *binary, GLsizei length);
-
-    // Returns the error.
-    Error handleError(const Error &error) override;
-
-    GLenum getError();
-    void markContextLost();
-    bool isContextLost();
-    GLenum getResetStatus();
-    bool isResetNotificationEnabled();
-
-    const egl::Config *getConfig() const;
-    EGLenum getClientType() const;
+    const egl::Config *getConfig() const { return mConfig; }
     EGLenum getRenderBuffer() const;
+    EGLenum getContextPriority() const;
 
     const GLubyte *getString(GLenum name) const;
     const GLubyte *getStringi(GLenum name, GLuint index) const;
 
     size_t getExtensionStringCount() const;
 
-    void requestExtension(const char *name);
+    bool isExtensionRequestable(const char *name) const;
+    bool isExtensionDisablable(const char *name) const;
     size_t getRequestableExtensionStringCount() const;
+    void setExtensionEnabled(const char *name, bool enabled);
+    void reinitializeAfterExtensionsChanged();
 
     rx::ContextImpl *getImplementation() const { return mImplementation.get(); }
-    const Workarounds &getWorkarounds() const;
 
-    void getFramebufferParameteriv(GLenum target, GLenum pname, GLint *params);
-    void setFramebufferParameteri(GLenum target, GLenum pname, GLint param);
+    [[nodiscard]] bool getScratchBuffer(size_t requestedSizeBytes,
+                                        angle::MemoryBuffer **scratchBufferOut) const;
+    [[nodiscard]] bool getZeroFilledBuffer(size_t requstedSizeBytes,
+                                           angle::MemoryBuffer **zeroBufferOut) const;
+    angle::ScratchBuffer *getScratchBuffer() const;
 
-    Error getScratchBuffer(size_t requestedSizeBytes, angle::MemoryBuffer **scratchBufferOut) const;
-    Error getZeroFilledBuffer(size_t requstedSizeBytes, angle::MemoryBuffer **zeroBufferOut) const;
-
-    void dispatchCompute(GLuint numGroupsX, GLuint numGroupsY, GLuint numGroupsZ);
+    angle::Result prepareForCopyImage();
+    angle::Result prepareForDispatch();
+    angle::Result prepareForInvalidate(GLenum target);
 
     MemoryProgramCache *getMemoryProgramCache() const { return mMemoryProgramCache; }
+    MemoryShaderCache *getMemoryShaderCache() const { return mMemoryShaderCache; }
 
-    template <EntryPoint EP, typename... ParamsT>
-    void gatherParams(ParamsT &&... params);
+    angle::SimpleMutex &getProgramCacheMutex() const;
 
-    void texStorage2D(GLenum target,
-                      GLsizei levels,
-                      GLenum internalFormat,
-                      GLsizei width,
-                      GLsizei height);
-    void texStorage3D(GLenum target,
-                      GLsizei levels,
-                      GLenum internalFormat,
-                      GLsizei width,
-                      GLsizei height,
-                      GLsizei depth);
+    bool hasBeenCurrent() const { return mHasBeenCurrent; }
+    egl::Display *getDisplay() const { return mDisplay; }
+    egl::Surface *getCurrentDrawSurface() const { return mCurrentDrawSurface; }
+    egl::Surface *getCurrentReadSurface() const { return mCurrentReadSurface; }
 
-    egl::Display *getCurrentDisplay() const { return mCurrentDisplay; }
-    egl::Surface *getCurrentDrawSurface() const { return mCurrentSurface; }
-    egl::Surface *getCurrentReadSurface() const { return mCurrentSurface; }
+    bool isRobustResourceInitEnabled() const { return mState.isRobustResourceInitEnabled(); }
+
+    bool isCurrentTransformFeedback(const TransformFeedback *tf) const;
+
+    bool isCurrentVertexArray(const VertexArray *va) const
+    {
+        return mState.isCurrentVertexArray(va);
+    }
+
+    ANGLE_INLINE bool isShared() const { return mShared; }
+    // Once a context is setShared() it cannot be undone
+    void setShared() { mShared = true; }
+
+    const State &getState() const { return mState; }
+    const PrivateState &getPrivateState() const { return mState.privateState(); }
+    const Version &getClientVersion() const { return mState.getClientVersion(); }
+    const Caps &getCaps() const { return mState.getCaps(); }
+    const TextureCapsMap &getTextureCaps() const { return mState.getTextureCaps(); }
+    const Extensions &getExtensions() const { return mState.getExtensions(); }
+    const Limitations &getLimitations() const { return mState.getLimitations(); }
+    bool isGLES1() const;
+
+    // To be used **only** directly by the entry points.
+    PrivateState *getMutablePrivateState() { return mState.getMutablePrivateState(); }
+    GLES1State *getMutableGLES1State() { return mState.getMutableGLES1State(); }
+
+    bool skipValidation() const { return mErrors.skipValidation(); }
+    void markContextLost(GraphicsResetStatus status) { mErrors.markContextLost(status); }
+    bool isContextLost() const { return mErrors.isContextLost(); }
+
+    // Some commands may need to generate a context lost error but still return a value.
+    // The validation layer does not generate the context lost error in such cases.
+    void contextLostErrorOnBlockingCall(angle::EntryPoint entryPoint) const;
+
+    ErrorSet *getMutableErrorSetForValidation() const { return &mErrors; }
+
+    // Specific methods needed for validation.
+    bool getQueryParameterInfo(GLenum pname, GLenum *type, unsigned int *numParams) const;
+    bool getIndexedQueryParameterInfo(GLenum target, GLenum *type, unsigned int *numParams) const;
+
+    ANGLE_INLINE Program *getProgramResolveLink(ShaderProgramID handle) const
+    {
+        Program *program = mState.mShaderProgramManager->getProgram(handle);
+        if (ANGLE_LIKELY(program))
+        {
+            program->resolveLink(this);
+        }
+        return program;
+    }
+
+    Program *getProgramNoResolveLink(ShaderProgramID handle) const;
+    Shader *getShaderResolveCompile(ShaderProgramID handle) const;
+    Shader *getShaderNoResolveCompile(ShaderProgramID handle) const;
+
+    bool nameStartsWithReservedPrefix(const GLchar *name) const
+    {
+        return (strncmp(name, "gl_", 3) == 0) ||
+               (isWebGL() && (strncmp(name, "webgl_", 6) == 0 || strncmp(name, "_webgl_", 7) == 0));
+    }
+
+    ANGLE_INLINE bool isTextureGenerated(TextureID texture) const
+    {
+        return mState.mTextureManager->isHandleGenerated(texture);
+    }
+
+    ANGLE_INLINE bool isBufferGenerated(BufferID buffer) const
+    {
+        return mState.mBufferManager->isHandleGenerated(buffer);
+    }
+
+    bool isRenderbufferGenerated(RenderbufferID renderbuffer) const;
+    bool isFramebufferGenerated(FramebufferID framebuffer) const;
+    bool isProgramPipelineGenerated(ProgramPipelineID pipeline) const;
+    bool isQueryGenerated(QueryID query) const;
+
+    bool usingDisplayTextureShareGroup() const;
+    bool usingDisplaySemaphoreShareGroup() const;
+
+    // Hack for the special WebGL 1 "DEPTH_STENCIL" internal format.
+    GLenum getConvertedRenderbufferFormat(GLenum internalformat) const;
+
+    bool isWebGL() const { return mState.isWebGL(); }
+    bool isWebGL1() const { return mState.isWebGL1(); }
+    const char *getRendererString() const { return mRendererString; }
+
+    bool isValidBufferBinding(BufferBinding binding) const { return mValidBufferBindings[binding]; }
+
+    // GLES1 emulation: Renderer level (for validation)
+    int vertexArrayIndex(ClientVertexArrayType type) const;
+    static int TexCoordArrayIndex(unsigned int unit);
+
+    // GL_KHR_parallel_shader_compile
+    std::shared_ptr<angle::WorkerThreadPool> getShaderCompileThreadPool() const;
+    std::shared_ptr<angle::WorkerThreadPool> getLinkSubTaskThreadPool() const;
+    std::shared_ptr<angle::WaitableEvent> postCompileLinkTask(
+        const std::shared_ptr<angle::Closure> &task,
+        angle::JobThreadSafety safety,
+        angle::JobResultExpectancy resultExpectancy) const;
+
+    // Single-threaded pool; runs everything instantly
+    std::shared_ptr<angle::WorkerThreadPool> getSingleThreadPool() const;
+
+    // Generic multithread pool.
+    std::shared_ptr<angle::WorkerThreadPool> getWorkerThreadPool() const;
+
+    const StateCache &getStateCache() const { return mStateCache; }
+    StateCache &getStateCache() { return mStateCache; }
+
+    const PrivateStateCache &getPrivateStateCache() const { return mPrivateStateCache; }
+    PrivateStateCache *getMutablePrivateStateCache() { return &mPrivateStateCache; }
+
+    void onSubjectStateChange(angle::SubjectIndex index, angle::SubjectMessage message) override;
+
+    void onSamplerUniformChange(size_t textureUnitIndex);
+
+    bool isBufferAccessValidationEnabled() const { return mBufferAccessValidationEnabled; }
+
+    const angle::FrontendFeatures &getFrontendFeatures() const;
+
+    angle::FrameCapture *getFrameCapture() const { return mFrameCapture.get(); }
+
+    const VertexArrayMap &getVertexArraysForCapture() const { return mVertexArrayMap; }
+    const QueryMap &getQueriesForCapture() const { return mQueryMap; }
+    const TransformFeedbackMap &getTransformFeedbacksForCapture() const
+    {
+        return mTransformFeedbackMap;
+    }
+    GLenum getErrorForCapture() const { return mErrors.getErrorForCapture(); }
+#if defined(ANGLE_ENABLE_ASSERTS)
+    uint32_t getPushedErrorCount() const { return mErrors.getPushedErrorCount(); }
+#endif
+
+    void onPreSwap();
+
+    ANGLE_INLINE Program *getActiveLinkedProgram() const
+    {
+        Program *program = mState.getLinkedProgram(this);
+        if (ANGLE_LIKELY(program))
+        {
+            return program;
+        }
+        return getActiveLinkedProgramPPO();
+    }
+
+    ANGLE_NOINLINE Program *getActiveLinkedProgramPPO() const;
+
+    // EGL_ANGLE_power_preference implementation.
+    egl::Error releaseHighPowerGPU();
+    egl::Error reacquireHighPowerGPU();
+    void onGPUSwitch();
+
+    // EGL_ANGLE_external_context_and_surface implementation.
+    egl::Error acquireExternalContext(egl::Surface *drawAndReadSurface);
+    egl::Error releaseExternalContext();
+
+    bool noopDrawProgram() const;
+    bool noopDraw(PrimitiveMode mode, GLsizei count) const;
+    bool noopDrawInstanced(PrimitiveMode mode, GLsizei count, GLsizei instanceCount) const;
+    bool noopMultiDraw(GLsizei drawcount) const;
+
+    bool isClearBufferMaskedOut(GLenum buffer,
+                                GLint drawbuffer,
+                                GLuint framebufferStencilSize) const;
+    bool noopClearBuffer(GLenum buffer, GLint drawbuffer) const;
+
+    void addRef() const { mRefCount++; }
+    void release() const { mRefCount--; }
+    bool isReferenced() const { return mRefCount > 0; }
+
+    egl::ShareGroup *getShareGroup() const { return mState.getShareGroup(); }
+
+    // Warning! When need to store pointer to the mutex in other object use `getRoot()` pointer, do
+    // NOT get pointer of the `getContextMutex()` reference.
+    egl::ContextMutex &getContextMutex() const { return mState.mContextMutex; }
+
+    bool supportsGeometryOrTesselation() const;
+    void dirtyAllState();
+
+    bool isDestroyed() const { return mIsDestroyed; }
+    void setIsDestroyed() { mIsDestroyed = true; }
+
+    // This function acts as glEnable(GL_COLOR_LOGIC_OP), but it's called from the GLES1 emulation
+    // code to implement logicOp using the non-GLES1 functionality (i.e. GL_ANGLE_logic_op).  The
+    // ContextPrivateEnable() entry point implementation cannot be used (as ContextPrivate*
+    // functions are typically used by other frontend-emulated features) because it forwards this
+    // back to GLES1.
+    void setLogicOpEnabledForGLES1(bool enabled);
+
+    // Needed by capture serialization logic that works with a "const" Context pointer.
+    void finishImmutable() const;
+
+    const angle::PerfMonitorCounterGroups &getPerfMonitorCounterGroups() const;
+
+    // Ends the currently active pixel local storage session with GL_STORE_OP_STORE on all planes.
+    void endPixelLocalStorageImplicit();
+
+    bool areBlobCacheFuncsSet() const;
+
+    size_t getMemoryUsage() const;
+
+    // Only used by vulkan backend.
+    void onSwapChainImageChanged() const { mDefaultFramebuffer->onSwapChainImageChanged(); }
+    void onBufferChanged(const angle::SubjectMessage message,
+                         VertexArrayBufferBindingMask vertexArrayBufferBindingMask) const
+    {
+        // Notify current vertex array of the buffer changed. Note that other vertex arrays of this
+        // context or other context requires rebind which will check buffer changes
+        // at that time.
+        if (vertexArrayBufferBindingMask.any())
+        {
+            ASSERT(mState.mVertexArray != nullptr);
+            mState.mVertexArray->onBufferChanged(this, message, vertexArrayBufferBindingMask);
+        }
+    }
 
   private:
-    Error prepareForDraw(GLenum drawMode);
-    void syncRendererState();
-    void syncRendererState(const State::DirtyBits &bitMask, const State::DirtyObjects &objectMask);
-    void syncStateForReadPixels();
-    void syncStateForTexImage();
-    void syncStateForClear();
-    void syncStateForBlit();
-    VertexArray *checkVertexArrayAllocation(GLuint vertexArrayHandle);
-    TransformFeedback *checkTransformFeedbackAllocation(GLuint transformFeedback);
+    void initializeDefaultResources();
+    void releaseSharedObjects();
 
-    void detachBuffer(GLuint buffer);
-    void detachTexture(GLuint texture);
-    void detachFramebuffer(GLuint framebuffer);
-    void detachRenderbuffer(GLuint renderbuffer);
-    void detachVertexArray(GLuint vertexArray);
-    void detachTransformFeedback(GLuint transformFeedback);
-    void detachSampler(GLuint sampler);
+    angle::Result prepareForDraw(PrimitiveMode mode);
+    angle::Result prepareForClear(GLbitfield mask);
+    angle::Result prepareForClearBuffer(GLenum buffer, GLint drawbuffer);
+    angle::Result syncState(const state::DirtyBits bitMask,
+                            const state::ExtendedDirtyBits extendedBitMask,
+                            const state::DirtyObjects &objectMask,
+                            Command command);
+    angle::Result syncDirtyBits(const state::DirtyBits bitMask,
+                                const state::ExtendedDirtyBits extendedBitMask,
+                                Command command);
+    angle::Result syncDirtyObjects(const state::DirtyObjects &objectMask, Command command);
+    angle::Result syncStateForReadPixels();
+    angle::Result syncStateForTexImage();
+    angle::Result syncStateForBlit(GLbitfield mask);
+    angle::Result syncStateForClear();
+    angle::Result syncTextureForCopy(Texture *texture);
+
+    VertexArray *checkVertexArrayAllocation(VertexArrayID vertexArrayHandle);
+    TransformFeedback *checkTransformFeedbackAllocation(TransformFeedbackID transformFeedback);
+
+    void detachBuffer(Buffer *buffer);
+    void detachTexture(TextureID texture);
+    void detachFramebuffer(FramebufferID framebuffer);
+    void detachRenderbuffer(RenderbufferID renderbuffer);
+    void detachVertexArray(VertexArrayID vertexArray);
+    void detachTransformFeedback(TransformFeedbackID transformFeedback);
+    void detachSampler(SamplerID sampler);
+    void detachProgramPipeline(ProgramPipelineID pipeline);
+
+    egl::Error setDefaultFramebuffer(egl::Surface *drawSurface, egl::Surface *readSurface);
+    egl::Error unsetDefaultFramebuffer();
 
     void initRendererString();
+    void initVendorString();
     void initVersionStrings();
     void initExtensionStrings();
 
-    void initCaps(const egl::DisplayExtensions &displayExtensions);
+    Extensions generateSupportedExtensions() const;
+    void initCaps();
     void updateCaps();
-    void initWorkarounds();
 
-    LabeledObject *getLabeledObject(GLenum identifier, GLuint name) const;
-    LabeledObject *getLabeledObjectFromPtr(const void *ptr) const;
+    gl::LabeledObject *getLabeledObject(GLenum identifier, GLuint name) const;
+    gl::LabeledObject *getLabeledObjectFromPtr(const void *ptr) const;
+
+    void setUniform1iImpl(Program *program,
+                          UniformLocation location,
+                          GLsizei count,
+                          const GLint *v);
+    void renderbufferStorageMultisampleImpl(GLenum target,
+                                            GLsizei samples,
+                                            GLenum internalformat,
+                                            GLsizei width,
+                                            GLsizei height,
+                                            MultisamplingMode mode);
+
+    void onUniformBlockBindingUpdated(GLuint uniformBlockIndex);
+
+    void endTilingImplicit();
+
+    State mState;
+    bool mShared;
+    bool mDisplayTextureShareGroup;
+    bool mDisplaySemaphoreShareGroup;
+
+    // Recorded errors
+    mutable ErrorSet mErrors;
+
+    // Stores for each buffer binding type whether is it allowed to be used in this context.
+    angle::PackedEnumBitSet<BufferBinding> mValidBufferBindings;
 
     std::unique_ptr<rx::ContextImpl> mImplementation;
 
-    // Caps to use for validation
-    Caps mCaps;
-    TextureCapsMap mTextureCaps;
-    Extensions mExtensions;
-    Limitations mLimitations;
+    EGLLabelKHR mLabel;
+
+    // Extensions supported by the implementation plus extensions that are implemented entirely
+    // within the frontend.
+    Extensions mSupportedExtensions;
 
     // Shader compiler. Lazily initialized hence the mutable value.
     mutable BindingPointer<Compiler> mCompiler;
 
-    State mGLState;
-
     const egl::Config *mConfig;
-    EGLenum mClientType;
 
     TextureMap mZeroTextures;
 
-    ResourceMap<FenceNV> mFenceNVMap;
+    ResourceMap<FenceNV, FenceNVID> mFenceNVMap;
     HandleAllocator mFenceNVHandleAllocator;
 
-    ResourceMap<Query> mQueryMap;
+    QueryMap mQueryMap;
     HandleAllocator mQueryHandleAllocator;
 
-    ResourceMap<VertexArray> mVertexArrayMap;
+    VertexArrayMap mVertexArrayMap;
     HandleAllocator mVertexArrayHandleAllocator;
 
-    ResourceMap<TransformFeedback> mTransformFeedbackMap;
-    HandleAllocator mTransformFeedbackAllocator;
+    TransformFeedbackMap mTransformFeedbackMap;
+    HandleAllocator mTransformFeedbackHandleAllocator;
 
+    const char *mVendorString;
     const char *mVersionString;
     const char *mShadingLanguageString;
     const char *mRendererString;
@@ -900,57 +986,97 @@ class Context final : public ValidationContext
     const char *mRequestableExtensionString;
     std::vector<const char *> mRequestableExtensionStrings;
 
-    // Recorded errors
-    typedef std::set<GLenum> ErrorSet;
-    ErrorSet mErrors;
+    // GLES1 renderer state
+    std::unique_ptr<GLES1Renderer> mGLES1Renderer;
 
     // Current/lost context flags
     bool mHasBeenCurrent;
-    bool mContextLost;
-    GLenum mResetStatus;
-    bool mContextLostForced;
-    GLenum mResetStrategy;
-    bool mRobustAccess;
-    egl::Surface *mCurrentSurface;
-    egl::Display *mCurrentDisplay;
-    Framebuffer *mSurfacelessFramebuffer;
-    bool mWebGLContext;
+    const bool mSurfacelessSupported;
+    egl::Surface *mCurrentDrawSurface;
+    egl::Surface *mCurrentReadSurface;
+    egl::Display *mDisplay;
+    const bool mWebGLContext;
+    bool mBufferAccessValidationEnabled;
+    const bool mExtensionsEnabled;
     MemoryProgramCache *mMemoryProgramCache;
+    MemoryShaderCache *mMemoryShaderCache;
 
-    State::DirtyBits mTexImageDirtyBits;
-    State::DirtyObjects mTexImageDirtyObjects;
-    State::DirtyBits mReadPixelsDirtyBits;
-    State::DirtyObjects mReadPixelsDirtyObjects;
-    State::DirtyBits mClearDirtyBits;
-    State::DirtyObjects mClearDirtyObjects;
-    State::DirtyBits mBlitDirtyBits;
-    State::DirtyObjects mBlitDirtyObjects;
+    state::DirtyObjects mDrawDirtyObjects;
 
-    Workarounds mWorkarounds;
+    StateCache mStateCache;
+    PrivateStateCache mPrivateStateCache;
+
+    state::DirtyObjects mTexImageDirtyObjects;
+    state::DirtyObjects mReadPixelsDirtyObjects;
+    state::DirtyObjects mClearDirtyObjects;
+    state::DirtyObjects mBlitDirtyObjects;
+    state::DirtyObjects mComputeDirtyObjects;
+    state::DirtyBits mCopyImageDirtyBits;
+    state::DirtyObjects mCopyImageDirtyObjects;
+    state::DirtyObjects mTilingDirtyObjects;
+
+    // Binding to container objects that use dependent state updates.
+    angle::ObserverBinding mVertexArrayObserverBinding;
+    angle::ObserverBinding mDrawFramebufferObserverBinding;
+    angle::ObserverBinding mReadFramebufferObserverBinding;
+    angle::ObserverBinding mProgramObserverBinding;
+    angle::ObserverBinding mProgramPipelineObserverBinding;
+    std::vector<angle::ObserverBinding> mUniformBufferObserverBindings;
+    std::vector<angle::ObserverBinding> mAtomicCounterBufferObserverBindings;
+    std::vector<angle::ObserverBinding> mShaderStorageBufferObserverBindings;
+    std::vector<angle::ObserverBinding> mSamplerObserverBindings;
+    std::vector<angle::ObserverBinding> mImageObserverBindings;
 
     // Not really a property of context state. The size and contexts change per-api-call.
-    mutable angle::ScratchBuffer mScratchBuffer;
-    mutable angle::ScratchBuffer mZeroFilledBuffer;
+    mutable Optional<angle::ScratchBuffer> mScratchBuffer;
+    mutable Optional<angle::ScratchBuffer> mZeroFilledBuffer;
+
+    // Note: we use a raw pointer here so we can exclude frame capture sources from the build.
+    std::unique_ptr<angle::FrameCapture> mFrameCapture;
+
+    // Cache representation of the serialized context string.
+    mutable std::string mCachedSerializedStateString;
+
+    mutable size_t mRefCount;
+
+    OverlayType mOverlay;
+
+    bool mIsDestroyed;
+
+    std::unique_ptr<Framebuffer> mDefaultFramebuffer;
 };
 
-template <EntryPoint EP, typename... ArgsT>
-ANGLE_INLINE void Context::gatherParams(ArgsT &&... args)
+class [[nodiscard]] ScopedContextRef
 {
-    static_assert(sizeof(EntryPointParamType<EP>) <= kParamsBufferSize,
-                  "Params struct too large, please increase kParamsBufferSize.");
-
-    mSavedArgsType = &EntryPointParamType<EP>::TypeInfo;
-
-    // Skip doing any work for ParamsBase/Invalid type.
-    if (!EntryPointParamType<EP>::TypeInfo.isValid())
+  public:
+    ScopedContextRef(Context *context) : mContext(context)
     {
-        return;
+        if (mContext)
+        {
+            mContext->addRef();
+        }
+    }
+    ~ScopedContextRef()
+    {
+        if (mContext)
+        {
+            mContext->release();
+        }
     }
 
-    EntryPointParamType<EP> *objBuffer =
-        reinterpret_cast<EntryPointParamType<EP> *>(mParamsBuffer.data());
-    EntryPointParamType<EP>::template Factory<EP>(objBuffer, this, std::forward<ArgsT>(args)...);
-}
+  private:
+    Context *const mContext;
+};
+
+// Thread-local current valid context bound to the thread.
+#if defined(ANGLE_PLATFORM_APPLE) || defined(ANGLE_USE_STATIC_THREAD_LOCAL_VARIABLES)
+extern Context *GetCurrentValidContextTLS();
+extern void SetCurrentValidContextTLS(Context *context);
+#else
+extern thread_local Context *gCurrentValidContext;
+#endif
+
+extern void SetCurrentValidContext(Context *context);
 
 }  // namespace gl
 

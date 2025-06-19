@@ -13,21 +13,20 @@
 
 namespace rx
 {
-class FunctionsGL;
+class ContextGL;
 
 class CompilerGL : public CompilerImpl
 {
   public:
-    CompilerGL(const FunctionsGL *functions);
+    CompilerGL(const ContextGL *);
     ~CompilerGL() override {}
 
-    gl::Error release() override { return gl::NoError(); }
-    ShShaderOutput getTranslatorOutputType() const override { return mTranslatorOutputType; }
+    ShShaderOutput getTranslatorOutputType() const override;
 
   private:
     ShShaderOutput mTranslatorOutputType;
 };
 
-}
+}  // namespace rx
 
-#endif // LIBANGLE_RENDERER_GL_COMPILERGL_H_
+#endif  // LIBANGLE_RENDERER_GL_COMPILERGL_H_

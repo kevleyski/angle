@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2015 The ANGLE Project Authors. All rights reserved.
+// Copyright 2015 The ANGLE Project Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
@@ -7,9 +7,9 @@
 //   Test for GLES SL 3.0 gl_FragDepth variable implementation.
 //
 
+#include "GLSLANG/ShaderLang.h"
 #include "angle_gl.h"
 #include "gtest/gtest.h"
-#include "GLSLANG/ShaderLang.h"
 
 namespace
 {
@@ -51,7 +51,7 @@ class FragDepthTest : public testing::TestWithParam<bool>
                                                const char *shader)
     {
         const char *shaderStrings[] = {version, pragma, shader};
-        bool success                = sh::Compile(mCompiler, shaderStrings, 3, 0);
+        bool success                = sh::Compile(mCompiler, shaderStrings, 3, {});
         if (success)
         {
             return ::testing::AssertionSuccess() << "Compilation success";
@@ -101,19 +101,8 @@ TEST_P(FragDepthTest, ExtensionFDFailsESSL300)
         "    fragColor = vec4(1.0);\n"
         "}\n";
     InitializeCompiler();
-    if (mResources.EXT_frag_depth == 1)
-    {
-        // TODO(kkinnunen, geofflang): this should fail. Extensions need to have similar level
-        // system to SymbolTable.  The biggest task is to implement version-aware preprocessor, so
-        // that the extension defines can be defined depending on the version that the preprocessor
-        // saw or did not see.
-        EXPECT_TRUE(TestShaderCompile(ESSLVersion300, EXTFDPragma, shaderString));
-    }
-    else
-    {
-        EXPECT_FALSE(TestShaderCompile(ESSLVersion300, EXTFDPragma, shaderString));
-    }
+    EXPECT_FALSE(TestShaderCompile(ESSLVersion300, EXTFDPragma, shaderString));
 }
 
 // The tests should pass regardless whether the EXT_frag_depth is on or not.
-INSTANTIATE_TEST_CASE_P(FragDepthTests, FragDepthTest, testing::Values(false, true));
+INSTANTIATE_TEST_SUITE_P(FragDepthTests, FragDepthTest, testing::Values(false, true));

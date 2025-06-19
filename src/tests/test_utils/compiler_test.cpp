@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2015 The ANGLE Project Authors. All rights reserved.
+// Copyright 2015 The ANGLE Project Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
@@ -10,27 +10,39 @@
 
 #include "angle_gl.h"
 #include "compiler/translator/Compiler.h"
-#include "compiler/translator/IntermTraverse.h"
+#include "compiler/translator/FunctionLookup.h"
+#include "compiler/translator/tree_util/IntermTraverse.h"
 
 namespace sh
 {
 
 namespace
 {
+constexpr char kBinaryBlob[] = "<binary blob>";
+bool IsBinaryBlob(const std::string &code)
+{
+    return code == kBinaryBlob;
+}
+
+ImmutableString GetSymbolTableMangledName(TIntermAggregate *node)
+{
+    ASSERT(!node->isConstructor());
+    return TFunctionLookup::GetMangledName(node->getFunction()->name().data(),
+                                           *node->getSequence());
+}
 
 class FunctionCallFinder : public TIntermTraverser
 {
   public:
-    FunctionCallFinder(const TString &functionMangledName)
+    FunctionCallFinder(const char *functionMangledName)
         : TIntermTraverser(true, false, false),
           mFunctionMangledName(functionMangledName),
           mNodeFound(nullptr)
-    {
-    }
+    {}
 
     bool visitAggregate(Visit visit, TIntermAggregate *node) override
     {
-        if (node->isFunctionCall() && node->getSymbolTableMangledName() == mFunctionMangledName)
+        if (!node->isConstructor() && GetSymbolTableMangledName(node) == mFunctionMangledName)
         {
             mNodeFound = node;
             return false;
@@ -42,7 +54,7 @@ class FunctionCallFinder : public TIntermTraverser
     const TIntermAggregate *getNode() const { return mNodeFound; }
 
   private:
-    TString mFunctionMangledName;
+    const char *mFunctionMangledName;
     TIntermAggregate *mNodeFound;
 };
 
@@ -53,7 +65,7 @@ bool compileTestShader(GLenum type,
                        ShShaderOutput output,
                        const std::string &shaderString,
                        ShBuiltInResources *resources,
-                       ShCompileOptions compileOptions,
+                       const ShCompileOptions &compileOptions,
                        std::string *translatedCode,
                        std::string *infoLog)
 {
@@ -64,14 +76,20 @@ bool compileTestShader(GLenum type,
         return false;
     }
 
-    const char *shaderStrings[] = { shaderString.c_str() };
+    const char *shaderStrings[] = {shaderString.c_str()};
 
-    bool compilationSuccess = translator->compile(shaderStrings, 1, SH_OBJECT_CODE | compileOptions);
-    TInfoSink &infoSink = translator->getInfoSink();
+    ShCompileOptions options = compileOptions;
+    options.objectCode       = true;
+    bool compilationSuccess  = translator->compile(shaderStrings, 1, options);
+    TInfoSink &infoSink      = translator->getInfoSink();
     if (translatedCode)
-        *translatedCode = infoSink.obj.c_str();
+    {
+        *translatedCode = infoSink.obj.isBinary() ? kBinaryBlob : infoSink.obj.c_str();
+    }
     if (infoLog)
+    {
         *infoLog = infoSink.info.c_str();
+    }
     SafeDelete(translator);
     return compilationSuccess;
 }
@@ -80,22 +98,28 @@ bool compileTestShader(GLenum type,
                        ShShaderSpec spec,
                        ShShaderOutput output,
                        const std::string &shaderString,
-                       ShCompileOptions compileOptions,
+                       const ShCompileOptions &compileOptions,
                        std::string *translatedCode,
                        std::string *infoLog)
 {
     ShBuiltInResources resources;
     sh::InitBuiltInResources(&resources);
-    return compileTestShader(type, spec, output, shaderString, &resources, compileOptions, translatedCode, infoLog);
+    resources.FragmentPrecisionHigh = 1;
+    return compileTestShader(type, spec, output, shaderString, &resources, compileOptions,
+                             translatedCode, infoLog);
 }
 
-MatchOutputCodeTest::MatchOutputCodeTest(GLenum shaderType,
-                                         ShCompileOptions defaultCompileOptions,
-                                         ShShaderOutput outputType)
-    : mShaderType(shaderType), mDefaultCompileOptions(defaultCompileOptions)
+MatchOutputCodeTest::MatchOutputCodeTest(GLenum shaderType, ShShaderOutput outputType)
+    : mShaderType(shaderType), mDefaultCompileOptions{}
 {
     sh::InitBuiltInResources(&mResources);
-    mOutputCode[outputType] = std::string();
+    mResources.FragmentPrecisionHigh = 1;
+    mOutputCode[outputType]          = std::string();
+}
+
+void MatchOutputCodeTest::setDefaultCompileOptions(const ShCompileOptions &defaultCompileOptions)
+{
+    mDefaultCompileOptions = defaultCompileOptions;
 }
 
 void MatchOutputCodeTest::addOutputType(const ShShaderOutput outputType)
@@ -114,13 +138,20 @@ void MatchOutputCodeTest::compile(const std::string &shaderString)
 }
 
 void MatchOutputCodeTest::compile(const std::string &shaderString,
-                                  const ShCompileOptions compileOptions)
+                                  const ShCompileOptions &compileOptions)
 {
     std::string infoLog;
     for (auto &code : mOutputCode)
     {
+        const ShShaderOutput output = code.first;
+        ShCompileOptions options    = compileOptions;
+        if (output == SH_SPIRV_VULKAN_OUTPUT || output == SH_MSL_METAL_OUTPUT)
+        {
+            options.removeInactiveVariables = true;
+        }
+
         bool compilationSuccess =
-            compileWithSettings(code.first, shaderString, compileOptions, &code.second, &infoLog);
+            compileWithSettings(output, shaderString, options, &code.second, &infoLog);
         if (!compilationSuccess)
         {
             FAIL() << "Shader compilation failed:\n" << infoLog;
@@ -130,20 +161,17 @@ void MatchOutputCodeTest::compile(const std::string &shaderString,
 
 bool MatchOutputCodeTest::compileWithSettings(ShShaderOutput output,
                                               const std::string &shaderString,
-                                              const ShCompileOptions compileOptions,
+                                              const ShCompileOptions &compileOptions,
                                               std::string *translatedCode,
                                               std::string *infoLog)
 {
-    return compileTestShader(mShaderType, SH_GLES3_SPEC, output, shaderString, &mResources,
+    return compileTestShader(mShaderType, SH_GLES3_1_SPEC, output, shaderString, &mResources,
                              compileOptions, translatedCode, infoLog);
 }
 
-bool MatchOutputCodeTest::foundInCode(ShShaderOutput output, const char *stringToFind) const
-{
-    return findInCode(output, stringToFind) != std::string::npos;
-}
-
-size_t MatchOutputCodeTest::findInCode(ShShaderOutput output, const char *stringToFind) const
+bool MatchOutputCodeTest::foundInCodeRegex(ShShaderOutput output,
+                                           const std::regex &regexToFind,
+                                           std::smatch *match) const
 {
     const auto code = mOutputCode.find(output);
     EXPECT_NE(mOutputCode.end(), code);
@@ -152,7 +180,67 @@ size_t MatchOutputCodeTest::findInCode(ShShaderOutput output, const char *string
         return std::string::npos;
     }
 
-    return code->second.find(stringToFind);
+    // No meaningful check for binary blobs
+    if (IsBinaryBlob(code->second))
+    {
+        return true;
+    }
+
+    if (match)
+    {
+        return std::regex_search(code->second, *match, regexToFind);
+    }
+    else
+    {
+        return std::regex_search(code->second, regexToFind);
+    }
+}
+
+bool MatchOutputCodeTest::foundInCode(ShShaderOutput output, const char *stringToFind) const
+{
+    const auto code = mOutputCode.find(output);
+    EXPECT_NE(mOutputCode.end(), code);
+    if (code == mOutputCode.end())
+    {
+        return std::string::npos;
+    }
+
+    // No meaningful check for binary blobs
+    if (IsBinaryBlob(code->second))
+    {
+        return true;
+    }
+
+    return code->second.find(stringToFind) != std::string::npos;
+}
+
+bool MatchOutputCodeTest::foundInCodeInOrder(ShShaderOutput output,
+                                             std::vector<const char *> stringsToFind)
+{
+    const auto code = mOutputCode.find(output);
+    EXPECT_NE(mOutputCode.end(), code);
+    if (code == mOutputCode.end())
+    {
+        return false;
+    }
+
+    // No meaningful check for binary blobs
+    if (IsBinaryBlob(code->second))
+    {
+        return true;
+    }
+
+    size_t currentPos = 0;
+    for (const char *stringToFind : stringsToFind)
+    {
+        auto position = code->second.find(stringToFind, currentPos);
+        if (position == std::string::npos)
+        {
+            return false;
+        }
+        currentPos = position + strlen(stringToFind);
+    }
+    return true;
 }
 
 bool MatchOutputCodeTest::foundInCode(ShShaderOutput output,
@@ -166,8 +254,17 @@ bool MatchOutputCodeTest::foundInCode(ShShaderOutput output,
         return false;
     }
 
+    // No meaningful check for binary blobs
+    if (IsBinaryBlob(code->second))
+    {
+        return true;
+    }
+
     size_t currentPos  = 0;
     int occurencesLeft = expectedOccurrences;
+
+    const size_t searchStringLength = strlen(stringToFind);
+
     while (occurencesLeft-- > 0)
     {
         auto position = code->second.find(stringToFind, currentPos);
@@ -175,8 +272,10 @@ bool MatchOutputCodeTest::foundInCode(ShShaderOutput output,
         {
             return false;
         }
-        currentPos = position + 1;
+        // Search strings should not overlap.
+        currentPos = position + searchStringLength;
     }
+    // Make sure that there aren't extra occurrences.
     return code->second.find(stringToFind, currentPos) == std::string::npos;
 }
 
@@ -185,6 +284,18 @@ bool MatchOutputCodeTest::foundInCode(const char *stringToFind) const
     for (auto &code : mOutputCode)
     {
         if (!foundInCode(code.first, stringToFind))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool MatchOutputCodeTest::foundInCodeRegex(const std::regex &regexToFind, std::smatch *match) const
+{
+    for (auto &code : mOutputCode)
+    {
+        if (!foundInCodeRegex(code.first, regexToFind, match))
         {
             return false;
         }
@@ -204,10 +315,28 @@ bool MatchOutputCodeTest::foundInCode(const char *stringToFind, const int expect
     return true;
 }
 
+bool MatchOutputCodeTest::foundInCodeInOrder(std::vector<const char *> stringsToFind)
+{
+    for (auto &code : mOutputCode)
+    {
+        if (!foundInCodeInOrder(code.first, stringsToFind))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool MatchOutputCodeTest::notFoundInCode(const char *stringToFind) const
 {
     for (auto &code : mOutputCode)
     {
+        // No meaningful check for binary blobs
+        if (IsBinaryBlob(code.second))
+        {
+            continue;
+        }
+
         if (foundInCode(code.first, stringToFind))
         {
             return false;
@@ -216,9 +345,27 @@ bool MatchOutputCodeTest::notFoundInCode(const char *stringToFind) const
     return true;
 }
 
+std::string MatchOutputCodeTest::outputCode(ShShaderOutput output) const
+{
+    const auto code = mOutputCode.find(output);
+    EXPECT_NE(mOutputCode.end(), code);
+    if (code == mOutputCode.end())
+    {
+        return {};
+    }
+
+    // No meaningful check for binary blobs
+    if (IsBinaryBlob(code->second))
+    {
+        return {};
+    }
+
+    return code->second;
+}
+
 const TIntermAggregate *FindFunctionCallNode(TIntermNode *root, const TString &functionMangledName)
 {
-    FunctionCallFinder finder(functionMangledName);
+    FunctionCallFinder finder(functionMangledName.c_str());
     root->traverse(&finder);
     return finder.getNode();
 }

@@ -18,39 +18,24 @@
  *
  */
 
-#ifndef TCU_ANGLE_WIN32_PLATFORM_H_
-#define TCU_ANGLE_WIN32_PLATFORM_H_
+#ifndef TCU_ANGLE_PLATFORM_H_
+#define TCU_ANGLE_PLATFORM_H_
 
-#include "tcuDefs.hpp"
-#include "tcuPlatform.hpp"
-#include "gluPlatform.hpp"
-
-#ifndef _EGLUPLATFORM_HPP
-#   include "egluPlatform.hpp"
-#endif
-
-#include "tcuANGLENativeDisplayFactory.h"
+#include "platform/PlatformMethods.h"
 
 namespace tcu
 {
+class Platform;
+}  // namespace tcu
 
-class ANGLEPlatform : public tcu::Platform,
-                      private glu::Platform,
-                      private eglu::Platform
+enum class dEQPDriverOption
 {
-  public:
-    ANGLEPlatform();
-    ~ANGLEPlatform();
-
-    bool processEvents() override;
-
-    const glu::Platform &getGLPlatform() const override { return static_cast<const glu::Platform&>(*this); }
-    const eglu::Platform &getEGLPlatform() const override { return static_cast<const eglu::Platform&>(*this); }
-
-  private:
-    EventState mEvents;
+    ANGLE,
+    NATIVE,
 };
 
-} // tcu
+tcu::Platform *CreateANGLEPlatform(angle::LogErrorFunc logErrorFunc,
+                                   uint32_t preRotation,
+                                   dEQPDriverOption driverOption);
 
-#endif // TCU_ANGLE_WIN32_PLATFORM_H_
+#endif  // TCU_ANGLE_PLATFORM_H_

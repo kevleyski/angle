@@ -1,5 +1,5 @@
 //
-// Copyright(c) 2016 The ANGLE Project Authors. All rights reserved.
+// Copyright 2016 The ANGLE Project Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
@@ -11,6 +11,17 @@
 
 #include <EGL/egl.h>
 
+#include "libANGLE/Debug.h"
+
+#include <atomic>
+
+namespace angle
+{
+#if defined(ANGLE_USE_ANDROID_TLS_SLOT)
+extern bool gUseAndroidOpenGLTlsSlot;
+#endif
+}  // namespace angle
+
 namespace gl
 {
 class Context;
@@ -19,15 +30,27 @@ class Context;
 namespace egl
 {
 class Error;
+class Debug;
 class Display;
 class Surface;
 
-class Thread
+class Thread : public LabeledObject
 {
   public:
     Thread();
 
-    void setError(const Error &error);
+    void setLabel(EGLLabelKHR label) override;
+    EGLLabelKHR getLabel() const override;
+
+    void setSuccess();
+
+    void setError(EGLint error,
+                  const char *command,
+                  const LabeledObject *object,
+                  const char *message);
+
+    // TODO: Remove egl::Error. http://anglebug.com/42261727
+    void setError(const Error &error, const char *command, const LabeledObject *object);
     EGLint getError() const;
 
     void setAPI(EGLenum api);
@@ -37,14 +60,18 @@ class Thread
     Surface *getCurrentDrawSurface() const;
     Surface *getCurrentReadSurface() const;
     gl::Context *getContext() const;
-    gl::Context *getValidContext() const;
-    Display *getCurrentDisplay() const;
+    Display *getDisplay() const;
 
   private:
+    EGLLabelKHR mLabel;
     EGLint mError;
     EGLenum mAPI;
     gl::Context *mContext;
 };
+
+void EnsureDebugAllocated();
+void DeallocateDebug();
+Debug *GetDebug();
 
 }  // namespace egl
 

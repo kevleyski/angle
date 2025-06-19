@@ -18,14 +18,13 @@ namespace rx
 class ShaderVk : public ShaderImpl
 {
   public:
-    ShaderVk(const gl::ShaderState &data);
+    ShaderVk(const gl::ShaderState &state);
     ~ShaderVk() override;
 
-    // Returns additional sh::Compile options.
-    ShCompileOptions prepareSourceAndReturnOptions(std::stringstream *sourceStream,
-                                                   std::string *sourcePath) override;
-    // Returns success for compiling on the driver. Returns success.
-    bool postTranslateCompile(gl::Compiler *compiler, std::string *infoLog) override;
+    std::shared_ptr<ShaderTranslateTask> compile(const gl::Context *context,
+                                                 ShCompileOptions *options) override;
+    std::shared_ptr<ShaderTranslateTask> load(const gl::Context *context,
+                                              gl::BinaryInputStream *stream) override;
 
     std::string getDebugInfo() const override;
 };

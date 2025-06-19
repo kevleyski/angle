@@ -13,24 +13,36 @@
 namespace rx
 {
 
-void DebugAnnotator9::beginEvent(const wchar_t *eventName)
+void DebugAnnotator9::beginEvent(gl::Context *context,
+                                 angle::EntryPoint entryPoint,
+                                 const char *eventName,
+                                 const char *eventMessage)
 {
-    D3DPERF_BeginEvent(0, eventName);
+    angle::LoggingAnnotator::beginEvent(context, entryPoint, eventName, eventMessage);
+    std::mbstate_t state = std::mbstate_t();
+    std::mbsrtowcs(mWCharMessage, &eventMessage, kMaxMessageLength, &state);
+    D3DPERF_BeginEvent(0, mWCharMessage);
 }
 
-void DebugAnnotator9::endEvent()
+void DebugAnnotator9::endEvent(gl::Context *context,
+                               const char *eventName,
+                               angle::EntryPoint entryPoint)
 {
+    angle::LoggingAnnotator::endEvent(context, eventName, entryPoint);
     D3DPERF_EndEvent();
 }
 
-void DebugAnnotator9::setMarker(const wchar_t *markerName)
+void DebugAnnotator9::setMarker(gl::Context *context, const char *markerName)
 {
-    D3DPERF_SetMarker(0, markerName);
+    angle::LoggingAnnotator::setMarker(context, markerName);
+    std::mbstate_t state = std::mbstate_t();
+    std::mbsrtowcs(mWCharMessage, &markerName, kMaxMessageLength, &state);
+    D3DPERF_SetMarker(0, mWCharMessage);
 }
 
-bool DebugAnnotator9::getStatus()
+bool DebugAnnotator9::getStatus(const gl::Context *context)
 {
     return !!D3DPERF_GetStatus();
 }
 
-}
+}  // namespace rx

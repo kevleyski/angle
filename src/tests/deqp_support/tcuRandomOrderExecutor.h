@@ -24,21 +24,23 @@
 #ifndef TCU_RANDOM_ORDER_EXECUTOR_H_
 #define TCU_RANDOM_ORDER_EXECUTOR_H_
 
-#include "tcuTestHierarchyIterator.hpp"
 #include "deUniquePtr.hpp"
+#include "tcuTestHierarchyIterator.hpp"
+
+#include "tests/test_utils/RenderDoc.h"
 
 namespace tcu
 {
 
 class RandomOrderExecutor
 {
-   public:
-    RandomOrderExecutor(TestPackageRoot &root, TestContext &testCtx);
+  public:
+    RandomOrderExecutor(TestPackageRoot &root, TestContext &testCtx, bool enableRenderDocCapture);
     ~RandomOrderExecutor(void);
 
     TestStatus execute(const std::string &path);
 
-   private:
+  private:
     void pruneStack(size_t newStackSize);
     TestCase *seekToCase(const std::string &path);
 
@@ -49,7 +51,7 @@ class RandomOrderExecutor
         TestNode *node;
         std::vector<TestNode *> children;
 
-        NodeStackEntry(void) : node(DE_NULL) {}
+        NodeStackEntry(void) : node(nullptr) {}
         NodeStackEntry(TestNode *node_) : node(node_) {}
     };
 
@@ -59,8 +61,10 @@ class RandomOrderExecutor
     std::vector<NodeStackEntry> m_nodeStack;
 
     de::MovePtr<TestCaseExecutor> m_caseExecutor;
+
+    RenderDoc mRenderDoc;
 };
 
-}  // tcu
+}  // namespace tcu
 
 #endif  // TCU_RANDOM_ORDER_EXECUTOR_H_

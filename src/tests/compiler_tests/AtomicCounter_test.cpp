@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2017 The ANGLE Project Authors. All rights reserved.
+// Copyright 2017 The ANGLE Project Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
@@ -34,7 +34,6 @@ class AtomicCounterTest : public ShaderCompileTreeTest
 // and the values of offset are properly assigned to counter variables.
 TEST_F(AtomicCounterTest, BasicAtomicCounterDeclaration)
 {
-    mExtraCompileOptions |= SH_VARIABLES;
     const std::string &source =
         "#version 310 es\n"
         "layout(binding = 2, offset = 4) uniform atomic_uint a;\n"
@@ -49,7 +48,7 @@ TEST_F(AtomicCounterTest, BasicAtomicCounterDeclaration)
         FAIL() << "Shader compilation failed, expecting success:\n" << mInfoLog;
     }
 
-    std::vector<sh::Uniform> counters = getUniforms();
+    std::vector<sh::ShaderVariable> counters = getUniforms();
 
     EXPECT_EQ(std::string("a"), counters[0].name);
     EXPECT_EQ(2, counters[0].binding);
@@ -203,6 +202,23 @@ TEST_F(AtomicCounterTest, OffsetMustNotSpecifiedForGlobalLayoutQualifier)
     const std::string &source =
         "#version 310 es\n"
         "layout(offset = 4) in;\n"
+        "void main()\n"
+        "{\n"
+        "}\n";
+    if (compile(source))
+    {
+        FAIL() << "Shader compilation succeeded, expecting failure:\n" << mInfoLog;
+    }
+}
+
+// Test that offset overlapping leads to compile-time error (ESSL 3.10 section 4.4.6).
+// Note that there is some vagueness in the spec when it comes to this test.
+TEST_F(AtomicCounterTest, BindingOffsetOverlappingForArrays)
+{
+    const std::string &source =
+        "#version 310 es\n"
+        "layout(binding = 2, offset = 4) uniform atomic_uint[2] a;\n"
+        "layout(binding = 2, offset = 8) uniform atomic_uint b;\n"
         "void main()\n"
         "{\n"
         "}\n";

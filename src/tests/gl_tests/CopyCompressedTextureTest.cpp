@@ -7,11 +7,12 @@
 // CopyCompressedTextureTest.cpp: Tests of the GL_CHROMIUM_copy_compressed_texture extension
 
 #include "test_utils/ANGLETest.h"
+#include "test_utils/gl_raii.h"
 
 namespace angle
 {
 
-class CopyCompressedTextureTest : public ANGLETest
+class CopyCompressedTextureTest : public ANGLETest<>
 {
   protected:
     CopyCompressedTextureTest()
@@ -24,48 +25,41 @@ class CopyCompressedTextureTest : public ANGLETest
         setConfigAlphaBits(8);
     }
 
-    void SetUp() override
+    void testSetUp() override
     {
-        ANGLETest::SetUp();
-
         glGenTextures(2, mTextures);
 
-        mProgram = CompileProgram(
+        constexpr char kVS[] =
             "attribute vec2 a_position;\n"
             "varying vec2 v_texcoord;\n"
             "void main()\n"
             "{\n"
             "   gl_Position = vec4(a_position, 0.0, 1.0);\n"
             "   v_texcoord = (a_position + 1.0) * 0.5;\n"
-            "}\n",
+            "}\n";
+
+        constexpr char kFS[] =
             "precision mediump float;\n"
             "uniform sampler2D u_texture;\n"
             "varying vec2 v_texcoord;\n"
             "void main()\n"
             "{\n"
             "    gl_FragColor = texture2D(u_texture, v_texcoord);\n"
-            "}\n");
-        ASSERT_NE(0u, mProgram);
+            "}\n";
 
-        if (extensionEnabled("GL_CHROMIUM_copy_compressed_texture"))
-        {
-            glCompressedCopyTextureCHROMIUM =
-                reinterpret_cast<PFNGLCOMPRESSEDCOPYTEXTURECHROMIUMPROC>(
-                    eglGetProcAddress("glCompressedCopyTextureCHROMIUM"));
-        }
+        mProgram = CompileProgram(kVS, kFS);
+        ASSERT_NE(0u, mProgram);
     }
 
-    void TearDown() override
+    void testTearDown() override
     {
         glDeleteTextures(2, mTextures);
         glDeleteProgram(mProgram);
-
-        ANGLETest::TearDown();
     }
 
     bool checkExtensions() const
     {
-        if (!extensionEnabled("GL_CHROMIUM_copy_compressed_texture"))
+        if (!IsGLExtensionEnabled("GL_CHROMIUM_copy_compressed_texture"))
         {
             std::cout
                 << "Test skipped because GL_CHROMIUM_copy_compressed_texture is not available."
@@ -84,8 +78,6 @@ class CopyCompressedTextureTest : public ANGLETest
 
     GLuint mProgram     = 0;
     GLuint mTextures[2] = {0, 0};
-
-    PFNGLCOMPRESSEDCOPYTEXTURECHROMIUMPROC glCompressedCopyTextureCHROMIUM = nullptr;
 };
 
 namespace
@@ -120,17 +112,9 @@ const uint8_t CompressedImageETC1[8] = {0x0, 0x0, 0xf8, 0x2, 0xff, 0xff, 0x0, 0x
 // Test to ensure that the basic functionality of the extension works.
 TEST_P(CopyCompressedTextureTest, Basic)
 {
-    if (!checkExtensions())
-    {
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!checkExtensions());
 
-    if (!extensionEnabled("GL_EXT_texture_compression_dxt1"))
-    {
-        std::cout << "Test skipped because GL_EXT_texture_compression_dxt1 is not available."
-                  << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_texture_compression_dxt1"));
 
     glBindTexture(GL_TEXTURE_2D, mTextures[0]);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -180,29 +164,28 @@ TEST_P(CopyCompressedTextureTest, InternalFormat)
         Data() : Data(GL_NONE, nullptr, 0) {}
         Data(GLint format, const uint8_t *data, GLsizei dataSize)
             : format(format), data(data), dataSize(dataSize)
-        {
-        }
+        {}
     };
     std::vector<Data> supportedFormats;
 
-    if (extensionEnabled("GL_AMD_compressed_ATC_texture"))
+    if (IsGLExtensionEnabled("GL_AMD_compressed_ATC_texture"))
     {
         supportedFormats.push_back(
             Data(GL_ATC_RGB_AMD, CompressedImageATC, sizeof(CompressedImageATC)));
         supportedFormats.push_back(Data(GL_ATC_RGBA_INTERPOLATED_ALPHA_AMD, CompressedImageATCIA,
                                         sizeof(CompressedImageATCIA)));
     }
-    if (extensionEnabled("GL_EXT_texture_compression_dxt1"))
+    if (IsGLExtensionEnabled("GL_EXT_texture_compression_dxt1"))
     {
         supportedFormats.push_back(Data(GL_COMPRESSED_RGB_S3TC_DXT1_EXT, CompressedImageDXT1,
                                         sizeof(CompressedImageDXT1)));
     }
-    if (extensionEnabled("GL_ANGLE_texture_compression_dxt5"))
+    if (IsGLExtensionEnabled("GL_ANGLE_texture_compression_dxt5"))
     {
         supportedFormats.push_back(Data(GL_COMPRESSED_RGBA_S3TC_DXT5_EXT, CompressedImageDXT5,
                                         sizeof(CompressedImageDXT5)));
     }
-    if (extensionEnabled("GL_OES_compressed_ETC1_RGB8_texture"))
+    if (IsGLExtensionEnabled("GL_OES_compressed_ETC1_RGB8_texture"))
     {
         supportedFormats.push_back(
             Data(GL_ETC1_RGB8_OES, CompressedImageETC1, sizeof(CompressedImageETC1)));
@@ -257,6 +240,33 @@ TEST_P(CopyCompressedTextureTest, InternalFormatNotSupported)
     EXPECT_GL_ERROR(GL_INVALID_OPERATION);
 }
 
+// Test that uncompressed to compressed textures generate errors when copying
+TEST_P(CopyCompressedTextureTest, UncompressedToCompressed)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_copy_image"));
+
+    glBindTexture(GL_TEXTURE_2D, mTextures[0]);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, &GLColor::red);
+    ASSERT_GL_NO_ERROR();
+
+    glBindTexture(GL_TEXTURE_2D, mTextures[1]);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glCompressedTexImage2D(GL_TEXTURE_2D, 0, GL_COMPRESSED_RGBA8_ETC2_EAC, 1, 1, 0, 16, NULL);
+    ASSERT_GL_NO_ERROR();
+
+    // return GL_INVALID_OPERATION because the two formats are not compatible
+    glCopyImageSubDataEXT(mTextures[0], GL_TEXTURE_2D, 0, 0, 0, 0, mTextures[1], GL_TEXTURE_2D, 0,
+                          0, 0, 0, 1, 1, 1);
+    EXPECT_GL_ERROR(GL_INVALID_OPERATION);
+}
+
 // Test validation of texture IDs
 TEST_P(CopyCompressedTextureTest, InvalidTextureIds)
 {
@@ -264,6 +274,8 @@ TEST_P(CopyCompressedTextureTest, InvalidTextureIds)
     {
         return;
     }
+
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_texture_compression_dxt1"));
 
     glBindTexture(GL_TEXTURE_2D, mTextures[0]);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -302,6 +314,8 @@ TEST_P(CopyCompressedTextureTest, BindingPoints)
         return;
     }
 
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_texture_compression_dxt1"));
+
     glBindTexture(GL_TEXTURE_CUBE_MAP, mTextures[0]);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
@@ -334,6 +348,8 @@ TEST_P(CopyCompressedTextureTest, Immutable)
         return;
     }
 
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_texture_compression_dxt1"));
+
     glBindTexture(GL_TEXTURE_2D, mTextures[0]);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
@@ -355,15 +371,127 @@ TEST_P(CopyCompressedTextureTest, Immutable)
     EXPECT_GL_ERROR(GL_INVALID_OPERATION);
 }
 
+class CopyCompressedTextureTestES32 : public CopyCompressedTextureTest
+{
+  protected:
+    void testSetUp() override
+    {
+        glGenTextures(1, &mTexture2D);
+        glGenTextures(1, &mTexture2DArray);
+    }
+
+    void testTearDown() override
+    {
+        glDeleteTextures(1, &mTexture2D);
+        glDeleteTextures(1, &mTexture2DArray);
+    }
+
+    GLuint mTexture2D      = 0;
+    GLuint mTexture2DArray = 0;
+};
+
+// Test that if the copy subregion depth is bigger than the depth range of either source texture
+// image or destination texture image, glCopyImageSubData() fails with GL_INVALID_VALUE
+TEST_P(CopyCompressedTextureTestES32, CopyRegionDepthOverflow)
+{
+    // Initialize texture data
+    std::vector<uint8_t> compressedSrcImgDataLevel0;
+    for (uint8_t i = 1; i < 32 + 1; ++i)
+    {
+        compressedSrcImgDataLevel0.push_back(i);
+    }
+
+    std::vector<uint8_t> compressedSrcImgDataLevel1;
+    for (uint8_t i = 1; i < 16 + 1; ++i)
+    {
+        compressedSrcImgDataLevel1.push_back(i);
+    }
+
+    // Allocate storage for mTexture2D, and fills each of 2 levels with the texture data
+    glBindTexture(GL_TEXTURE_2D, mTexture2D);
+    glTexStorage2D(GL_TEXTURE_2D, 2, GL_COMPRESSED_RGBA_ASTC_6x6, 8, 4);
+    glCompressedTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 8, 4, GL_COMPRESSED_RGBA_ASTC_6x6, 32,
+                              compressedSrcImgDataLevel0.data());
+    glCompressedTexSubImage2D(GL_TEXTURE_2D, 1, 0, 0, 4, 2, GL_COMPRESSED_RGBA_ASTC_6x6, 16,
+                              compressedSrcImgDataLevel1.data());
+
+    // Allocate storage for mTexture2DArray, and fills each of 2 levels with the texture data
+    glBindTexture(GL_TEXTURE_2D_ARRAY, mTexture2DArray);
+    glTexStorage3D(GL_TEXTURE_2D_ARRAY, 2, GL_COMPRESSED_RGBA_ASTC_6x6, 8, 4, 2);
+    glCompressedTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, 8, 4, 1, GL_COMPRESSED_RGBA_ASTC_6x6,
+                              32, compressedSrcImgDataLevel0.data());
+    glCompressedTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 1, 8, 4, 1, GL_COMPRESSED_RGBA_ASTC_6x6,
+                              32, compressedSrcImgDataLevel0.data());
+    glCompressedTexSubImage3D(GL_TEXTURE_2D_ARRAY, 1, 0, 0, 0, 4, 2, 1, GL_COMPRESSED_RGBA_ASTC_6x6,
+                              16, compressedSrcImgDataLevel1.data());
+    glCompressedTexSubImage3D(GL_TEXTURE_2D_ARRAY, 1, 0, 0, 1, 4, 2, 1, GL_COMPRESSED_RGBA_ASTC_6x6,
+                              16, compressedSrcImgDataLevel1.data());
+
+    // Perform a copy from mTexture2D mipmap 0 to mTexture2DArray mipmap 0, where the copy region
+    // depth is bigger than the depth of source texture mTexture2D mipmap 0. This should fail with
+    // GL_INVALID_VALUE.
+    glCopyImageSubData(mTexture2D, GL_TEXTURE_2D, 0, 0, 0, 0, mTexture2DArray, GL_TEXTURE_2D_ARRAY,
+                       0, 0, 0, 0, 8, 4, 2);
+    EXPECT_GL_ERROR(GL_INVALID_VALUE);
+    // Perform a copy from mTexture2DArray mipmap 0 to mTexture2D mipmap 0, where the copy region
+    // depth is bigger than the depth of destination texture mTexture2D mipmap 0. This should fail
+    // with GL_INVALID_VALUE.
+    glCopyImageSubData(mTexture2DArray, GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, mTexture2D, GL_TEXTURE_2D,
+                       0, 0, 0, 0, 8, 4, 2);
+    EXPECT_GL_ERROR(GL_INVALID_VALUE);
+}
+
+// Test that if the copy subregion width and height equals to the texture level width and height,
+// even if width and height are not aligned with the compressed texture block size, the
+// glCopyImageSubData() should be allowed.
+TEST_P(CopyCompressedTextureTestES32, CopyRegionOccupiesEntireMipDoNotNeedAlignment)
+{
+    // Initialize texture data
+    std::vector<uint8_t> compressedSrcImgDataLevel0;
+    for (uint8_t i = 1; i < 32 + 1; ++i)
+    {
+        compressedSrcImgDataLevel0.push_back(i);
+    }
+
+    std::vector<uint8_t> compressedSrcImgDataLevel1;
+    for (uint8_t i = 1; i < 16 + 1; ++i)
+    {
+        compressedSrcImgDataLevel1.push_back(i);
+    }
+
+    // Allocate storage for mTexture2D, and fills each of 2 levels with the texture data
+    glBindTexture(GL_TEXTURE_2D, mTexture2D);
+    glTexStorage2D(GL_TEXTURE_2D, 2, GL_COMPRESSED_RGBA_ASTC_6x6, 8, 4);
+    glCompressedTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 8, 4, GL_COMPRESSED_RGBA_ASTC_6x6, 32,
+                              compressedSrcImgDataLevel0.data());
+    glCompressedTexSubImage2D(GL_TEXTURE_2D, 1, 0, 0, 4, 2, GL_COMPRESSED_RGBA_ASTC_6x6, 16,
+                              compressedSrcImgDataLevel1.data());
+
+    // Allocate storage for mTexture2DArray, and fills each of 2 levels with the texture data
+    glBindTexture(GL_TEXTURE_2D_ARRAY, mTexture2DArray);
+    glTexStorage3D(GL_TEXTURE_2D_ARRAY, 2, GL_COMPRESSED_RGBA_ASTC_6x6, 8, 4, 2);
+    glCompressedTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, 8, 4, 1, GL_COMPRESSED_RGBA_ASTC_6x6,
+                              32, compressedSrcImgDataLevel0.data());
+    glCompressedTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 1, 8, 4, 1, GL_COMPRESSED_RGBA_ASTC_6x6,
+                              32, compressedSrcImgDataLevel0.data());
+    glCompressedTexSubImage3D(GL_TEXTURE_2D_ARRAY, 1, 0, 0, 0, 4, 2, 1, GL_COMPRESSED_RGBA_ASTC_6x6,
+                              16, compressedSrcImgDataLevel1.data());
+    glCompressedTexSubImage3D(GL_TEXTURE_2D_ARRAY, 1, 0, 0, 1, 4, 2, 1, GL_COMPRESSED_RGBA_ASTC_6x6,
+                              16, compressedSrcImgDataLevel1.data());
+
+    // Perform a copy from mTexture2D mipmap 0 to mTexture2DArray mipmap 0.
+    // This should succeed. Even if the width and height are not multiple of 6, the region covers
+    // the entire mipmap 0 of source texture mTexture2D, and the region covers the entire slice 0 of
+    // mipmap 0 of destination texture mTexture2DArray
+    glCopyImageSubData(mTexture2D, GL_TEXTURE_2D, 0, 0, 0, 0, mTexture2DArray, GL_TEXTURE_2D_ARRAY,
+                       0, 0, 0, 0, 8, 4, 1);
+    EXPECT_GL_NO_ERROR();
+}
+
 // Use this to select which configurations (e.g. which renderer, which GLES major version) these
 // tests should be run against.
-ANGLE_INSTANTIATE_TEST(CopyCompressedTextureTest,
-                       ES2_D3D9(),
-                       ES2_D3D11(),
-                       ES3_D3D11(),
-                       ES2_OPENGL(),
-                       ES3_OPENGL(),
-                       ES2_OPENGLES(),
-                       ES3_OPENGLES());
+ANGLE_INSTANTIATE_TEST_ES2_AND_ES3(CopyCompressedTextureTest);
+GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(CopyCompressedTextureTestES32);
+ANGLE_INSTANTIATE_TEST_ES32(CopyCompressedTextureTestES32);
 
 }  // namespace angle

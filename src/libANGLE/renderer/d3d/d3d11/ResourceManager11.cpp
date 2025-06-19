@@ -17,54 +17,67 @@ namespace rx
 
 namespace
 {
-size_t ComputeMippedMemoryUsage(unsigned int width,
-                                unsigned int height,
-                                unsigned int depth,
-                                size_t pixelSize,
-                                unsigned int mipLevels)
+
+constexpr uint8_t kDebugInitTextureDataValue = 0x48;
+constexpr FLOAT kDebugColorInitClearValue[4] = {0.3f, 0.5f, 0.7f, 0.5f};
+constexpr FLOAT kDebugDepthInitValue         = 0.2f;
+constexpr UINT8 kDebugStencilInitValue       = 3;
+
+// A hard limit on buffer size. This works around a problem in the NVIDIA drivers where buffer sizes
+// close to MAX_UINT would give undefined results. The limit of MAX_UINT/2 should be generous enough
+// for almost any demanding application.
+constexpr UINT kMaximumBufferSizeHardLimit = std::numeric_limits<UINT>::max() >> 1;
+
+uint64_t ComputeMippedMemoryUsage(unsigned int width,
+                                  unsigned int height,
+                                  unsigned int depth,
+                                  uint64_t pixelSize,
+                                  unsigned int mipLevels)
 {
-    size_t sizeSum = 0;
+    uint64_t sizeSum = 0;
 
     for (unsigned int level = 0; level < mipLevels; ++level)
     {
         unsigned int mipWidth  = std::max(width >> level, 1u);
         unsigned int mipHeight = std::max(height >> level, 1u);
         unsigned int mipDepth  = std::max(depth >> level, 1u);
-        sizeSum += static_cast<size_t>(mipWidth * mipHeight * mipDepth) * pixelSize;
+        sizeSum += static_cast<uint64_t>(mipWidth * mipHeight * mipDepth) * pixelSize;
     }
 
     return sizeSum;
 }
 
-size_t ComputeMemoryUsage(const D3D11_TEXTURE2D_DESC *desc)
+uint64_t ComputeMemoryUsage(const D3D11_TEXTURE2D_DESC *desc)
 {
     ASSERT(desc);
-    size_t pixelBytes = static_cast<size_t>(d3d11::GetDXGIFormatSizeInfo(desc->Format).pixelBytes);
+    uint64_t pixelBytes =
+        static_cast<uint64_t>(d3d11::GetDXGIFormatSizeInfo(desc->Format).pixelBytes);
     return ComputeMippedMemoryUsage(desc->Width, desc->Height, 1, pixelBytes, desc->MipLevels);
 }
 
-size_t ComputeMemoryUsage(const D3D11_TEXTURE3D_DESC *desc)
+uint64_t ComputeMemoryUsage(const D3D11_TEXTURE3D_DESC *desc)
 {
     ASSERT(desc);
-    size_t pixelBytes = static_cast<size_t>(d3d11::GetDXGIFormatSizeInfo(desc->Format).pixelBytes);
+    uint64_t pixelBytes =
+        static_cast<uint64_t>(d3d11::GetDXGIFormatSizeInfo(desc->Format).pixelBytes);
     return ComputeMippedMemoryUsage(desc->Width, desc->Height, desc->Depth, pixelBytes,
                                     desc->MipLevels);
 }
 
-size_t ComputeMemoryUsage(const D3D11_BUFFER_DESC *desc)
+uint64_t ComputeMemoryUsage(const D3D11_BUFFER_DESC *desc)
 {
     ASSERT(desc);
-    return static_cast<size_t>(desc->ByteWidth);
+    return static_cast<uint64_t>(desc->ByteWidth);
 }
 
 template <typename T>
-size_t ComputeMemoryUsage(const T *desc)
+uint64_t ComputeMemoryUsage(const T *desc)
 {
     return 0;
 }
 
 template <ResourceType ResourceT>
-size_t ComputeGenericMemoryUsage(ID3D11DeviceChild *genericResource)
+uint64_t ComputeGenericMemoryUsage(ID3D11DeviceChild *genericResource)
 {
     auto *typedResource = static_cast<GetD3D11Type<ResourceT> *>(genericResource);
     GetDescType<ResourceT> desc;
@@ -72,7 +85,7 @@ size_t ComputeGenericMemoryUsage(ID3D11DeviceChild *genericResource)
     return ComputeMemoryUsage(&desc);
 }
 
-size_t ComputeGenericMemoryUsage(ResourceType resourceType, ID3D11DeviceChild *resource)
+uint64_t ComputeGenericMemoryUsage(ResourceType resourceType, ID3D11DeviceChild *resource)
 {
     switch (resourceType)
     {
@@ -101,6 +114,12 @@ HRESULT CreateResource(ID3D11Device *device,
                        const D3D11_SUBRESOURCE_DATA *initData,
                        ID3D11Buffer **buffer)
 {
+    // Force buffers to be limited to a fixed max size.
+    if (desc->ByteWidth > kMaximumBufferSizeHardLimit)
+    {
+        return E_OUTOFMEMORY;
+    }
+
     return device->CreateBuffer(desc, initData, buffer);
 }
 
@@ -203,6 +222,14 @@ HRESULT CreateResource(ID3D11Device *device,
 }
 
 HRESULT CreateResource(ID3D11Device *device,
+                       const D3D11_UNORDERED_ACCESS_VIEW_DESC *desc,
+                       ID3D11Resource *resource,
+                       ID3D11UnorderedAccessView **resourceOut)
+{
+    return device->CreateUnorderedAccessView(resource, desc, resourceOut);
+}
+
+HRESULT CreateResource(ID3D11Device *device,
                        const D3D11_TEXTURE2D_DESC *desc,
                        const D3D11_SUBRESOURCE_DATA *initData,
                        ID3D11Texture2D **texture)
@@ -243,19 +270,73 @@ DXGI_FORMAT GetTypedDepthStencilFormat(DXGI_FORMAT dxgiFormat)
     }
 }
 
+DXGI_FORMAT GetTypedColorFormatForClearing(DXGI_FORMAT dxgiFormat)
+{
+    switch (dxgiFormat)
+    {
+        case DXGI_FORMAT_R32G32B32A32_TYPELESS:
+            return DXGI_FORMAT_R32G32B32A32_FLOAT;
+        case DXGI_FORMAT_R32G32B32_TYPELESS:
+            return DXGI_FORMAT_R32G32B32_FLOAT;
+        case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+            return DXGI_FORMAT_R16G16B16A16_FLOAT;
+        case DXGI_FORMAT_R32G32_TYPELESS:
+            return DXGI_FORMAT_R32G32_FLOAT;
+        case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+            return DXGI_FORMAT_R10G10B10A2_UNORM;
+        case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+            return DXGI_FORMAT_R8G8B8A8_UNORM;
+        case DXGI_FORMAT_R16G16_TYPELESS:
+            return DXGI_FORMAT_R16G16_FLOAT;
+        case DXGI_FORMAT_R32_TYPELESS:
+            return DXGI_FORMAT_R32_FLOAT;
+        case DXGI_FORMAT_R8G8_TYPELESS:
+            return DXGI_FORMAT_R8G8_UNORM;
+        case DXGI_FORMAT_R16_TYPELESS:
+            return DXGI_FORMAT_R16_FLOAT;
+        case DXGI_FORMAT_R8_TYPELESS:
+            return DXGI_FORMAT_R8_UNORM;
+        case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+            return DXGI_FORMAT_B8G8R8A8_UNORM;
+        case DXGI_FORMAT_B8G8R8X8_TYPELESS:
+            return DXGI_FORMAT_B8G8R8X8_UNORM;
+        case DXGI_FORMAT_BC1_TYPELESS:
+        case DXGI_FORMAT_BC2_TYPELESS:
+        case DXGI_FORMAT_BC3_TYPELESS:
+        case DXGI_FORMAT_BC4_TYPELESS:
+        case DXGI_FORMAT_BC5_TYPELESS:
+        case DXGI_FORMAT_BC6H_TYPELESS:
+        case DXGI_FORMAT_BC7_TYPELESS:
+        case DXGI_FORMAT_R32G8X24_TYPELESS:
+        case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS:
+        case DXGI_FORMAT_X32_TYPELESS_G8X24_UINT:
+        case DXGI_FORMAT_R24G8_TYPELESS:
+        case DXGI_FORMAT_R24_UNORM_X8_TYPELESS:
+        case DXGI_FORMAT_X24_TYPELESS_G8_UINT:
+            UNREACHABLE();
+            return dxgiFormat;
+        default:
+            return dxgiFormat;
+    }
+}
+
 template <typename DescT, typename ResourceT>
-gl::Error ClearResource(Renderer11 *renderer, const DescT *desc, ResourceT *texture)
+angle::Result ClearResource(d3d::Context *context,
+                            Renderer11 *renderer,
+                            const DescT *desc,
+                            ResourceT *texture)
 {
     // No-op.
-    return gl::NoError();
+    return angle::Result::Continue;
 }
 
 template <>
-gl::Error ClearResource(Renderer11 *renderer,
-                        const D3D11_TEXTURE2D_DESC *desc,
-                        ID3D11Texture2D *texture)
+angle::Result ClearResource(d3d::Context *context,
+                            Renderer11 *renderer,
+                            const D3D11_TEXTURE2D_DESC *desc,
+                            ID3D11Texture2D *texture)
 {
-    ID3D11DeviceContext *context = renderer->getDeviceContext();
+    ID3D11DeviceContext *deviceContext = renderer->getDeviceContext();
 
     if ((desc->BindFlags & D3D11_BIND_DEPTH_STENCIL) != 0)
     {
@@ -281,55 +362,105 @@ gl::Error ClearResource(Renderer11 *renderer,
             }
 
             d3d11::DepthStencilView dsv;
-            ANGLE_TRY(renderer->allocateResource(dsvDesc, texture, &dsv));
+            ANGLE_TRY(renderer->allocateResource(context, dsvDesc, texture, &dsv));
 
-            context->ClearDepthStencilView(dsv.get(), clearFlags, 1.0f, 0);
+            deviceContext->ClearDepthStencilView(dsv.get(), clearFlags, kDebugDepthInitValue,
+                                                 kDebugStencilInitValue);
         }
     }
     else
     {
         ASSERT((desc->BindFlags & D3D11_BIND_RENDER_TARGET) != 0);
-        d3d11::RenderTargetView rtv;
-        ANGLE_TRY(renderer->allocateResourceNoDesc(texture, &rtv));
-
-        const FLOAT zero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-        context->ClearRenderTargetView(rtv.get(), zero);
+        DXGI_FORMAT formatForClearing = GetTypedColorFormatForClearing(desc->Format);
+        if (formatForClearing != desc->Format || desc->MipLevels > 1)
+        {
+            D3D11_RENDER_TARGET_VIEW_DESC rtvDesc;
+            rtvDesc.Format = formatForClearing;
+            if (desc->SampleDesc.Count <= 1)
+            {
+                rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+            }
+            else
+            {
+                rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DMS;
+                ASSERT(desc->MipLevels == 1);
+            }
+            for (UINT mipLevel = 0; mipLevel < desc->MipLevels; ++mipLevel)
+            {
+                d3d11::RenderTargetView rtv;
+                if (rtvDesc.ViewDimension == D3D11_RTV_DIMENSION_TEXTURE2D)
+                {
+                    rtvDesc.Texture2D.MipSlice = mipLevel;
+                }
+                ANGLE_TRY(renderer->allocateResource(context, rtvDesc, texture, &rtv));
+                deviceContext->ClearRenderTargetView(rtv.get(), kDebugColorInitClearValue);
+            }
+        }
+        else
+        {
+            d3d11::RenderTargetView rtv;
+            ANGLE_TRY(renderer->allocateResourceNoDesc(context, texture, &rtv));
+            deviceContext->ClearRenderTargetView(rtv.get(), kDebugColorInitClearValue);
+        }
     }
 
-    return gl::NoError();
+    return angle::Result::Continue;
 }
 
 template <>
-gl::Error ClearResource(Renderer11 *renderer,
-                        const D3D11_TEXTURE3D_DESC *desc,
-                        ID3D11Texture3D *texture)
+angle::Result ClearResource(d3d::Context *context,
+                            Renderer11 *renderer,
+                            const D3D11_TEXTURE3D_DESC *desc,
+                            ID3D11Texture3D *texture)
 {
-    ID3D11DeviceContext *context = renderer->getDeviceContext();
+    ID3D11DeviceContext *deviceContext = renderer->getDeviceContext();
 
     ASSERT((desc->BindFlags & D3D11_BIND_DEPTH_STENCIL) == 0);
     ASSERT((desc->BindFlags & D3D11_BIND_RENDER_TARGET) != 0);
 
-    d3d11::RenderTargetView rtv;
-    ANGLE_TRY(renderer->allocateResourceNoDesc(texture, &rtv));
+    DXGI_FORMAT formatForClearing = GetTypedColorFormatForClearing(desc->Format);
+    D3D11_RENDER_TARGET_VIEW_DESC rtvDesc;
+    rtvDesc.Format          = formatForClearing;
+    rtvDesc.ViewDimension   = D3D11_RTV_DIMENSION_TEXTURE3D;
+    rtvDesc.Texture3D.WSize = 1;
+    UINT depth              = desc->Depth;
+    for (UINT mipLevel = 0; mipLevel < desc->MipLevels; ++mipLevel)
+    {
+        rtvDesc.Texture3D.MipSlice = mipLevel;
+        for (UINT w = 0; w < depth; ++w)
+        {
+            rtvDesc.Texture3D.FirstWSlice = w;
+            d3d11::RenderTargetView rtv;
+            ANGLE_TRY(renderer->allocateResource(context, rtvDesc, texture, &rtv));
+            deviceContext->ClearRenderTargetView(rtv.get(), kDebugColorInitClearValue);
+        }
+        depth /= 2;
+    }
 
-    const FLOAT zero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    context->ClearRenderTargetView(rtv.get(), zero);
-    return gl::NoError();
+    return angle::Result::Continue;
 }
 
-#define ANGLE_RESOURCE_STRINGIFY_OP(NAME, RESTYPE, D3D11TYPE, DESCTYPE, INITDATATYPE) #RESTYPE,
+#define ANGLE_RESOURCE_STRINGIFY_OP(NAME, RESTYPE, D3D11TYPE, DESCTYPE, INITDATATYPE) \
+    "Error allocating " #RESTYPE,
 
-constexpr std::array<const char *, NumResourceTypes> kResourceTypeNames = {
+constexpr std::array<const char *, NumResourceTypes> kResourceTypeErrors = {
     {ANGLE_RESOURCE_TYPE_OP(Stringify, ANGLE_RESOURCE_STRINGIFY_OP)}};
-static_assert(kResourceTypeNames[NumResourceTypes - 1] != nullptr,
+static_assert(kResourceTypeErrors[NumResourceTypes - 1] != nullptr,
               "All members must be initialized.");
 
 }  // anonymous namespace
 
 // ResourceManager11 Implementation.
-ResourceManager11::ResourceManager11()
-    : mAllocatedResourceCounts({{}}), mAllocatedResourceDeviceMemory({{}})
+ResourceManager11::ResourceManager11() : mInitializeAllocations(false)
 {
+    for (auto &count : mAllocatedResourceCounts)
+    {
+        count = 0;
+    }
+    for (auto &memorySize : mAllocatedResourceDeviceMemory)
+    {
+        memorySize = 0;
+    }
 }
 
 ResourceManager11::~ResourceManager11()
@@ -339,63 +470,62 @@ ResourceManager11::~ResourceManager11()
         ASSERT(count == 0);
     }
 
-    for (size_t memorySize : mAllocatedResourceDeviceMemory)
+    for (uint64_t memorySize : mAllocatedResourceDeviceMemory)
     {
         ASSERT(memorySize == 0);
     }
 }
 
 template <typename T>
-gl::Error ResourceManager11::allocate(Renderer11 *renderer,
-                                      const GetDescFromD3D11<T> *desc,
-                                      GetInitDataFromD3D11<T> *initData,
-                                      Resource11<T> *resourceOut)
+angle::Result ResourceManager11::allocate(d3d::Context *context,
+                                          Renderer11 *renderer,
+                                          const GetDescFromD3D11<T> *desc,
+                                          GetInitDataFromD3D11<T> *initData,
+                                          Resource11<T> *resourceOut)
 {
     ID3D11Device *device = renderer->getDevice();
     T *resource          = nullptr;
 
     GetInitDataFromD3D11<T> *shadowInitData = initData;
-    if (!shadowInitData && renderer->isRobustResourceInitEnabled())
+    if (!shadowInitData && mInitializeAllocations)
     {
         shadowInitData = createInitDataIfNeeded<T>(desc);
     }
 
     HRESULT hr = CreateResource(device, desc, shadowInitData, &resource);
-    if (FAILED(hr))
-    {
-        ASSERT(!resource);
-        if (d3d11::isDeviceLostError(hr))
-        {
-            renderer->notifyDeviceLost();
-        }
-        return gl::OutOfMemory() << "Error allocating "
-                                 << std::string(kResourceTypeNames[ResourceTypeIndex<T>()]) << ". "
-                                 << gl::FmtHR(hr);
-    }
+    ANGLE_TRY_HR(context, hr, kResourceTypeErrors[ResourceTypeIndex<T>()]);
 
-    if (!shadowInitData && renderer->isRobustResourceInitEnabled())
+    if (!shadowInitData && mInitializeAllocations)
     {
-        ANGLE_TRY(ClearResource(renderer, desc, resource));
+        ANGLE_TRY(ClearResource(context, renderer, desc, resource));
     }
 
     ASSERT(resource);
     incrResource(GetResourceTypeFromD3D11<T>(), ComputeMemoryUsage(desc));
     *resourceOut = std::move(Resource11<T>(resource, this));
-    return gl::NoError();
+    return angle::Result::Continue;
 }
 
-void ResourceManager11::incrResource(ResourceType resourceType, size_t memorySize)
+void ResourceManager11::incrResource(ResourceType resourceType, uint64_t memorySize)
 {
-    mAllocatedResourceCounts[ResourceTypeIndex(resourceType)]++;
-    mAllocatedResourceDeviceMemory[ResourceTypeIndex(resourceType)] += memorySize;
+    size_t typeIndex = ResourceTypeIndex(resourceType);
+
+    mAllocatedResourceCounts[typeIndex]++;
+    mAllocatedResourceDeviceMemory[typeIndex] += memorySize;
+
+    // This checks for integer overflow.
+    ASSERT(mAllocatedResourceCounts[typeIndex] > 0);
+    ASSERT(mAllocatedResourceDeviceMemory[typeIndex] >= memorySize);
 }
 
-void ResourceManager11::decrResource(ResourceType resourceType, size_t memorySize)
+void ResourceManager11::decrResource(ResourceType resourceType, uint64_t memorySize)
 {
-    ASSERT(mAllocatedResourceCounts[ResourceTypeIndex(resourceType)] > 0);
-    mAllocatedResourceCounts[ResourceTypeIndex(resourceType)]--;
-    ASSERT(mAllocatedResourceDeviceMemory[ResourceTypeIndex(resourceType)] >= memorySize);
-    mAllocatedResourceDeviceMemory[ResourceTypeIndex(resourceType)] -= memorySize;
+    size_t typeIndex = ResourceTypeIndex(resourceType);
+
+    ASSERT(mAllocatedResourceCounts[typeIndex] > 0);
+    mAllocatedResourceCounts[typeIndex]--;
+    ASSERT(mAllocatedResourceDeviceMemory[typeIndex] >= memorySize);
+    mAllocatedResourceDeviceMemory[typeIndex] -= memorySize;
 }
 
 void ResourceManager11::onReleaseGeneric(ResourceType resourceType, ID3D11DeviceChild *resource)
@@ -416,11 +546,15 @@ const D3D11_SUBRESOURCE_DATA *ResourceManager11::createInitDataIfNeeded<ID3D11Te
         return nullptr;
     }
 
-    size_t requiredSize = ComputeMemoryUsage(desc);
+    size_t requiredSize = static_cast<size_t>(ComputeMemoryUsage(desc));
     if (mZeroMemory.size() < requiredSize)
     {
-        mZeroMemory.resize(requiredSize);
-        mZeroMemory.fill(0);
+        if (!mZeroMemory.resize(requiredSize))
+        {
+            ERR() << "Failed to allocate D3D texture initialization data.";
+            return nullptr;
+        }
+        mZeroMemory.fill(kDebugInitTextureDataValue);
     }
 
     const auto &formatSizeInfo = d3d11::GetDXGIFormatSizeInfo(desc->Format);
@@ -462,11 +596,15 @@ const D3D11_SUBRESOURCE_DATA *ResourceManager11::createInitDataIfNeeded<ID3D11Te
         return nullptr;
     }
 
-    size_t requiredSize = ComputeMemoryUsage(desc);
+    size_t requiredSize = static_cast<size_t>(ComputeMemoryUsage(desc));
     if (mZeroMemory.size() < requiredSize)
     {
-        mZeroMemory.resize(requiredSize);
-        mZeroMemory.fill(0);
+        if (!mZeroMemory.resize(requiredSize))
+        {
+            ERR() << "Failed to allocate D3D texture initialization data.";
+            return nullptr;
+        }
+        mZeroMemory.fill(kDebugInitTextureDataValue);
     }
 
     const auto &formatSizeInfo = d3d11::GetDXGIFormatSizeInfo(desc->Format);
@@ -500,12 +638,15 @@ GetInitDataFromD3D11<T> *ResourceManager11::createInitDataIfNeeded(const GetDesc
     return nullptr;
 }
 
-#define ANGLE_INSTANTIATE_OP(NAME, RESTYPE, D3D11TYPE, DESCTYPE, INITDATATYPE)  \
-    \
-template \
-gl::Error                                                                       \
-    ResourceManager11::allocate(Renderer11 *, const DESCTYPE *, INITDATATYPE *, \
-                                Resource11<D3D11TYPE> *);
+void ResourceManager11::setAllocationsInitialized(bool initialize)
+{
+    mInitializeAllocations = initialize;
+}
+
+#define ANGLE_INSTANTIATE_OP(NAME, RESTYPE, D3D11TYPE, DESCTYPE, INITDATATYPE) \
+                                                                               \
+    template angle::Result ResourceManager11::allocate(                        \
+        d3d::Context *, Renderer11 *, const DESCTYPE *, INITDATATYPE *, Resource11<D3D11TYPE> *);
 
 ANGLE_RESOURCE_TYPE_OP(Instantitate, ANGLE_INSTANTIATE_OP)
 }  // namespace rx

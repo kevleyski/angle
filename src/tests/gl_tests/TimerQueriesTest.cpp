@@ -7,13 +7,15 @@
 //   Various tests for EXT_disjoint_timer_query functionality and validation
 //
 
-#include "system_utils.h"
 #include "test_utils/ANGLETest.h"
-#include "random_utils.h"
+#include "test_utils/gl_raii.h"
+#include "util/EGLWindow.h"
+#include "util/random_utils.h"
+#include "util/test_utils.h"
 
 using namespace angle;
 
-class TimerQueriesTest : public ANGLETest
+class TimerQueriesTest : public ANGLETest<>
 {
   protected:
     TimerQueriesTest() : mProgram(0), mProgramCostly(0)
@@ -27,30 +29,16 @@ class TimerQueriesTest : public ANGLETest
         setConfigDepthBits(24);
     }
 
-    virtual void SetUp()
+    void testSetUp() override
     {
-        ANGLETest::SetUp();
-
-        const std::string passthroughVS =
-            "attribute highp vec4 position; void main(void)\n"
-            "{\n"
-            "    gl_Position = position;\n"
-            "}\n";
-
-        const std::string passthroughPS =
-            "precision highp float; void main(void)\n"
-            "{\n"
-            "    gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);\n"
-            "}\n";
-
-        const std::string costlyVS =
+        constexpr char kCostlyVS[] =
             "attribute highp vec4 position; varying highp vec4 testPos; void main(void)\n"
             "{\n"
             "    testPos     = position;\n"
             "    gl_Position = position;\n"
             "}\n";
 
-        const std::string costlyPS =
+        constexpr char kCostlyFS[] =
             "precision highp float; varying highp vec4 testPos; void main(void)\n"
             "{\n"
             "    vec4 test = testPos;\n"
@@ -61,18 +49,17 @@ class TimerQueriesTest : public ANGLETest
             "    gl_FragColor = test;\n"
             "}\n";
 
-        mProgram = CompileProgram(passthroughVS, passthroughPS);
+        mProgram = CompileProgram(essl1_shaders::vs::Simple(), essl1_shaders::fs::Red());
         ASSERT_NE(0u, mProgram) << "shader compilation failed.";
 
-        mProgramCostly = CompileProgram(costlyVS, costlyPS);
+        mProgramCostly = CompileProgram(kCostlyVS, kCostlyFS);
         ASSERT_NE(0u, mProgramCostly) << "shader compilation failed.";
     }
 
-    virtual void TearDown()
+    void testTearDown() override
     {
         glDeleteProgram(mProgram);
         glDeleteProgram(mProgramCostly);
-        ANGLETest::TearDown();
     }
 
     GLuint mProgram;
@@ -82,12 +69,7 @@ class TimerQueriesTest : public ANGLETest
 // Test that all proc addresses are loadable
 TEST_P(TimerQueriesTest, ProcAddresses)
 {
-    if (!extensionEnabled("GL_EXT_disjoint_timer_query"))
-    {
-        std::cout << "Test skipped because GL_EXT_disjoint_timer_query is not available."
-                  << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_disjoint_timer_query"));
 
     ASSERT_NE(nullptr, eglGetProcAddress("glGenQueriesEXT"));
     ASSERT_NE(nullptr, eglGetProcAddress("glDeleteQueriesEXT"));
@@ -105,12 +87,13 @@ TEST_P(TimerQueriesTest, ProcAddresses)
 // Tests the time elapsed query
 TEST_P(TimerQueriesTest, TimeElapsed)
 {
-    if (!extensionEnabled("GL_EXT_disjoint_timer_query"))
-    {
-        std::cout << "Test skipped because GL_EXT_disjoint_timer_query is not available."
-                  << std::endl;
-        return;
-    }
+    // TODO(anglebug.com/40096747): Failing on ARM-based Apple DTKs.
+    ANGLE_SKIP_TEST_IF(IsMac() && IsARM64() && IsDesktopOpenGL());
+
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_disjoint_timer_query"));
+
+    // http://anglebug.com/42263715
+    ANGLE_SKIP_TEST_IF(IsMac() && IsOpenGL());
 
     GLint queryTimeElapsedBits = 0;
     glGetQueryivEXT(GL_TIME_ELAPSED_EXT, GL_QUERY_COUNTER_BITS_EXT, &queryTimeElapsedBits);
@@ -119,11 +102,7 @@ TEST_P(TimerQueriesTest, TimeElapsed)
     std::cout << "Time elapsed counter bits: " << queryTimeElapsedBits << std::endl;
 
     // Skip test if the number of bits is 0
-    if (queryTimeElapsedBits == 0)
-    {
-        std::cout << "Test skipped because of 0 counter bits" << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!queryTimeElapsedBits);
 
     glDepthMask(GL_TRUE);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
@@ -135,7 +114,7 @@ TEST_P(TimerQueriesTest, TimeElapsed)
 
     // Test time elapsed for a single quad
     glBeginQueryEXT(GL_TIME_ELAPSED_EXT, query1);
-    drawQuad(mProgram, "position", 0.8f);
+    drawQuad(mProgram, essl1_shaders::PositionAttrib(), 0.8f);
     glEndQueryEXT(GL_TIME_ELAPSED_EXT);
     ASSERT_GL_NO_ERROR();
 
@@ -183,6 +162,12 @@ TEST_P(TimerQueriesTest, TimeElapsed)
     EXPECT_LT(0ul, result1);
     EXPECT_LT(0ul, result2);
 
+    // The time elapsed should be less than a second.  Not an actual
+    // requirement, but longer than a second to draw something basic hints at
+    // an issue with the queries themselves.
+    EXPECT_LT(result1, 1000000000ul);
+    EXPECT_LT(result2, 1000000000ul);
+
     // TODO(geofflang): Re-enable this check when it is non-flaky
     // The costly quad should take longer than the cheap quad
     // EXPECT_LT(result1, result2);
@@ -192,18 +177,9 @@ TEST_P(TimerQueriesTest, TimeElapsed)
 TEST_P(TimerQueriesTest, TimeElapsedTextureTest)
 {
     // OSX drivers don't seem to properly time non-draw calls so we skip the test on Mac
-    if (IsOSX())
-    {
-        std::cout << "Test skipped on OSX" << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(IsMac() && IsOpenGL());
 
-    if (!extensionEnabled("GL_EXT_disjoint_timer_query"))
-    {
-        std::cout << "Test skipped because GL_EXT_disjoint_timer_query is not available."
-                  << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_disjoint_timer_query"));
 
     GLint queryTimeElapsedBits = 0;
     glGetQueryivEXT(GL_TIME_ELAPSED_EXT, GL_QUERY_COUNTER_BITS_EXT, &queryTimeElapsedBits);
@@ -212,13 +188,9 @@ TEST_P(TimerQueriesTest, TimeElapsedTextureTest)
     std::cout << "Time elapsed counter bits: " << queryTimeElapsedBits << std::endl;
 
     // Skip test if the number of bits is 0
-    if (queryTimeElapsedBits == 0)
-    {
-        std::cout << "Test skipped because of 0 counter bits" << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!queryTimeElapsedBits);
 
-    GLubyte pixels[] = {0, 0, 0, 255, 255, 255, 255, 255, 255, 0, 0, 0};
+    std::vector<GLColor> texData{GLColor::black, GLColor::white, GLColor::white, GLColor::black};
 
     // Query and texture initialization
     GLuint texture;
@@ -230,7 +202,7 @@ TEST_P(TimerQueriesTest, TimeElapsedTextureTest)
     glBeginQueryEXT(GL_TIME_ELAPSED_EXT, query);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
     glBindTexture(GL_TEXTURE_2D, texture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 2, 2, 0, GL_RGB, GL_UNSIGNED_BYTE, pixels);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 2, 2, 0, GL_RGB, GL_UNSIGNED_BYTE, texData.data());
     glGenerateMipmap(GL_TEXTURE_2D);
     glFinish();
     glEndQueryEXT(GL_TIME_ELAPSED_EXT);
@@ -255,17 +227,15 @@ TEST_P(TimerQueriesTest, TimeElapsedTextureTest)
 
     std::cout << "Elapsed time: " << result << std::endl;
     EXPECT_LT(0ul, result);
+
+    // an issue with the queries themselves.
+    EXPECT_LT(result, 1000000000ul);
 }
 
 // Tests validation of query functions with respect to elapsed time query
 TEST_P(TimerQueriesTest, TimeElapsedValidationTest)
 {
-    if (!extensionEnabled("GL_EXT_disjoint_timer_query"))
-    {
-        std::cout << "Test skipped because GL_EXT_disjoint_timer_query is not available."
-                  << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_disjoint_timer_query"));
 
     GLint queryTimeElapsedBits = 0;
     glGetQueryivEXT(GL_TIME_ELAPSED_EXT, GL_QUERY_COUNTER_BITS_EXT, &queryTimeElapsedBits);
@@ -274,11 +244,7 @@ TEST_P(TimerQueriesTest, TimeElapsedValidationTest)
     std::cout << "Time elapsed counter bits: " << queryTimeElapsedBits << std::endl;
 
     // Skip test if the number of bits is 0
-    if (queryTimeElapsedBits == 0)
-    {
-        std::cout << "Test skipped because of 0 counter bits" << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!queryTimeElapsedBits);
 
     GLuint query = 0;
     glGenQueriesEXT(-1, &query);
@@ -312,28 +278,18 @@ TEST_P(TimerQueriesTest, TimeElapsedValidationTest)
 // Tests timer queries operating under multiple EGL contexts with mid-query switching
 TEST_P(TimerQueriesTest, TimeElapsedMulticontextTest)
 {
-    if (IsAMD() && IsOpenGL() && IsWindows())
-    {
-        // TODO(jmadill): Figure out why this test is flaky on Win/AMD/OpenGL.
-        // http://anglebug.com/1541
-        std::cout << "Test skipped on Windows AMD OpenGL Debug." << std::endl;
-        return;
-    }
+    // TODO(jmadill): Figure out why this test is flaky on AMD/OpenGL.
+    // http://anglebug.com/42260520
+    ANGLE_SKIP_TEST_IF(IsAMD() && IsOpenGL());
 
-    if (IsAMD() && IsOSX())
-    {
-        // TODO(cwallez): Figure out why this test is flaky on OSX/AMD.
-        // http://anglebug.com/1866
-        std::cout << "Test skipped on Mac AMD." << std::endl;
-        return;
-    }
+    // TODO(anglebug.com/40096747): Failing on ARM-based Apple DTKs.
+    ANGLE_SKIP_TEST_IF(IsMac() && IsARM64() && IsDesktopOpenGL());
 
-    if (!extensionEnabled("GL_EXT_disjoint_timer_query"))
-    {
-        std::cout << "Test skipped because GL_EXT_disjoint_timer_query is not available."
-                  << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_disjoint_timer_query"));
+
+    // Test skipped because the Vulkan backend doesn't account for (and remove) time spent in other
+    // contexts.
+    ANGLE_SKIP_TEST_IF(IsVulkan());
 
     GLint queryTimeElapsedBits = 0;
     glGetQueryivEXT(GL_TIME_ELAPSED_EXT, GL_QUERY_COUNTER_BITS_EXT, &queryTimeElapsedBits);
@@ -342,11 +298,7 @@ TEST_P(TimerQueriesTest, TimeElapsedMulticontextTest)
     std::cout << "Time elapsed counter bits: " << queryTimeElapsedBits << std::endl;
 
     // Skip test if the number of bits is 0
-    if (queryTimeElapsedBits == 0)
-    {
-        std::cout << "Test skipped because of 0 counter bits" << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!queryTimeElapsedBits);
 
     // Without a glClear, the first draw call on GL takes a huge amount of time when run after the
     // D3D test on certain NVIDIA drivers
@@ -386,27 +338,14 @@ TEST_P(TimerQueriesTest, TimeElapsedMulticontextTest)
     };
     ContextInfo contexts[2];
 
-    // Shaders
-    const std::string cheapVS =
-        "attribute highp vec4 position; void main(void)\n"
-        "{\n"
-        "    gl_Position = position;\n"
-        "}\n";
-
-    const std::string cheapPS =
-        "precision highp float; void main(void)\n"
-        "{\n"
-        "    gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);\n"
-        "}\n";
-
-    const std::string costlyVS =
+    constexpr char kCostlyVS[] =
         "attribute highp vec4 position; varying highp vec4 testPos; void main(void)\n"
         "{\n"
         "    testPos     = position;\n"
         "    gl_Position = position;\n"
         "}\n";
 
-    const std::string costlyPS =
+    constexpr char kCostlyFS[] =
         "precision highp float; varying highp vec4 testPos; void main(void)\n"
         "{\n"
         "    vec4 test = testPos;\n"
@@ -422,7 +361,7 @@ TEST_P(TimerQueriesTest, TimeElapsedMulticontextTest)
     contexts[0].display = display;
     ASSERT_NE(contexts[0].context, EGL_NO_CONTEXT);
     eglMakeCurrent(display, surface, surface, contexts[0].context);
-    contexts[0].program = CompileProgram(cheapVS, cheapPS);
+    contexts[0].program = CompileProgram(essl1_shaders::vs::Simple(), essl1_shaders::fs::Red());
     glGenQueriesEXT(1, &contexts[0].query);
     ASSERT_GL_NO_ERROR();
 
@@ -431,14 +370,14 @@ TEST_P(TimerQueriesTest, TimeElapsedMulticontextTest)
     contexts[1].display = display;
     ASSERT_NE(contexts[1].context, EGL_NO_CONTEXT);
     eglMakeCurrent(display, surface, surface, contexts[1].context);
-    contexts[1].program = CompileProgram(costlyVS, costlyPS);
+    contexts[1].program = CompileProgram(kCostlyVS, kCostlyFS);
     glGenQueriesEXT(1, &contexts[1].query);
     ASSERT_GL_NO_ERROR();
 
     // Start the query and draw a quad on the first context without ending the query
     eglMakeCurrent(display, surface, surface, contexts[0].context);
     glBeginQueryEXT(GL_TIME_ELAPSED_EXT, contexts[0].query);
-    drawQuad(contexts[0].program, "position", 0.8f);
+    drawQuad(contexts[0].program, essl1_shaders::PositionAttrib(), 0.8f);
     ASSERT_GL_NO_ERROR();
 
     // Switch contexts, draw the expensive quad and end its query
@@ -475,18 +414,17 @@ TEST_P(TimerQueriesTest, TimeElapsedMulticontextTest)
     std::cout << "Elapsed time: " << result2 << " costly quad" << std::endl;
     EXPECT_LT(0ul, result1);
     EXPECT_LT(0ul, result2);
-    EXPECT_LT(result1, result2);
+    EXPECT_LT(result1, 1000000000ul);
+    EXPECT_LT(result2, 1000000000ul);
+
+    // This check can never really be non-flaky. http://anglebug.com/42263737
+    // EXPECT_LT(result1, result2);
 }
 
 // Tests GPU timestamp functionality
 TEST_P(TimerQueriesTest, Timestamp)
 {
-    if (!extensionEnabled("GL_EXT_disjoint_timer_query"))
-    {
-        std::cout << "Test skipped because GL_EXT_disjoint_timer_query is not available."
-                  << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_disjoint_timer_query"));
 
     GLint queryTimestampBits = 0;
     glGetQueryivEXT(GL_TIMESTAMP_EXT, GL_QUERY_COUNTER_BITS_EXT, &queryTimestampBits);
@@ -495,11 +433,7 @@ TEST_P(TimerQueriesTest, Timestamp)
     std::cout << "Timestamp counter bits: " << queryTimestampBits << std::endl;
 
     // Macs for some reason return 0 bits so skip the test for now if either are 0
-    if (queryTimestampBits == 0)
-    {
-        std::cout << "Test skipped because of 0 counter bits" << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!queryTimestampBits);
 
     glDepthMask(GL_TRUE);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
@@ -509,7 +443,7 @@ TEST_P(TimerQueriesTest, Timestamp)
     glGenQueriesEXT(1, &query1);
     glGenQueriesEXT(1, &query2);
     glQueryCounterEXT(query1, GL_TIMESTAMP_EXT);
-    drawQuad(mProgram, "position", 0.8f);
+    drawQuad(mProgram, essl1_shaders::PositionAttrib(), 0.8f);
     glQueryCounterEXT(query2, GL_TIMESTAMP_EXT);
 
     ASSERT_GL_NO_ERROR();
@@ -549,19 +483,60 @@ TEST_P(TimerQueriesTest, Timestamp)
     EXPECT_LT(result1, result2);
 }
 
-class TimerQueriesTestES3 : public TimerQueriesTest
+void getQueryResult(GLuint queryObjectName, GLuint64 *result)
 {
-};
+    GLuint queryResult = GL_FALSE;
+    while (queryResult != GL_TRUE)
+    {
+        glGetQueryObjectuivEXT(queryObjectName, GL_QUERY_RESULT_AVAILABLE, &queryResult);
+        ASSERT_GL_NO_ERROR();
+        angle::Sleep(50);
+    }
+    glGetQueryObjectui64vEXT(queryObjectName, GL_QUERY_RESULT_EXT, result);
+}
+
+class TimerstampQueriesTest : public TimerQueriesTest
+{};
+
+// Tests getting timestamps via glGetQueryObjectui64vEXT
+TEST_P(TimerstampQueriesTest, TimestampBasic)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_disjoint_timer_query"));
+    ANGLE_SKIP_TEST_IF(!IsD3D11() || !IsWindows());
+    GLint queryTimestampBits = 0;
+    glGetQueryivEXT(GL_TIMESTAMP_EXT, GL_QUERY_COUNTER_BITS_EXT, &queryTimestampBits);
+    ASSERT_GL_NO_ERROR();
+    std::cout << "Timestamp counter bits: " << queryTimestampBits << std::endl;
+
+    GLQuery queryObject1, queryObject2;
+    glQueryCounterEXT(queryObject1, GL_TIMESTAMP_EXT);
+    ASSERT_GL_NO_ERROR();
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    drawQuad(mProgramCostly, "position", 0.8f);
+    glQueryCounterEXT(queryObject2, GL_TIMESTAMP_EXT);
+    ASSERT_GL_NO_ERROR();
+
+    GLuint64 result1 = 0;
+    getQueryResult(queryObject1, &result1);
+
+    GLuint64 result2 = 0;
+    getQueryResult(queryObject2, &result2);
+    std::cout << "Timestamps: " << result1 << " " << result2 << std::endl;
+    if (queryTimestampBits != 0)
+    {
+        ASSERT_TRUE(result1 != 0 && result2 > result1);
+    }
+}
+
+class TimerQueriesTestES3 : public TimerQueriesTest
+{};
 
 // Tests getting timestamps via glGetInteger64v
 TEST_P(TimerQueriesTestES3, TimestampGetInteger64)
 {
-    if (!extensionEnabled("GL_EXT_disjoint_timer_query"))
-    {
-        std::cout << "Test skipped because GL_EXT_disjoint_timer_query is not available."
-                  << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_disjoint_timer_query"));
+    // http://anglebug.com/40096654
+    ANGLE_SKIP_TEST_IF(IsAndroid());
 
     GLint queryTimestampBits = 0;
     glGetQueryivEXT(GL_TIMESTAMP_EXT, GL_QUERY_COUNTER_BITS_EXT, &queryTimestampBits);
@@ -569,11 +544,7 @@ TEST_P(TimerQueriesTestES3, TimestampGetInteger64)
 
     std::cout << "Timestamp counter bits: " << queryTimestampBits << std::endl;
 
-    if (queryTimestampBits == 0)
-    {
-        std::cout << "Test skipped because of 0 counter bits" << std::endl;
-        return;
-    }
+    ANGLE_SKIP_TEST_IF(!queryTimestampBits);
 
     glDepthMask(GL_TRUE);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
@@ -581,7 +552,7 @@ TEST_P(TimerQueriesTestES3, TimestampGetInteger64)
     GLint64 result1 = 0;
     GLint64 result2 = 0;
     glGetInteger64v(GL_TIMESTAMP_EXT, &result1);
-    drawQuad(mProgram, "position", 0.8f);
+    drawQuad(mProgram, essl1_shaders::PositionAttrib(), 0.8f);
     glGetInteger64v(GL_TIMESTAMP_EXT, &result2);
     ASSERT_GL_NO_ERROR();
     std::cout << "Timestamps (getInteger64v): " << result1 << " " << result2 << std::endl;
@@ -590,11 +561,59 @@ TEST_P(TimerQueriesTestES3, TimestampGetInteger64)
     EXPECT_LT(result1, result2);
 }
 
-ANGLE_INSTANTIATE_TEST(TimerQueriesTest,
-                       ES2_D3D9(),
-                       ES2_D3D11(),
-                       ES3_D3D11(),
-                       ES2_OPENGL(),
-                       ES3_OPENGL());
+// Test glQueryCounterEXT with target GL_TIMESTAMP_EXT after query id has been used for
+// GL_ANY_SAMPLES_PASSED
+TEST_P(TimerQueriesTest, QueryCounterEXTWithTypeMismatch)
+{
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_disjoint_timer_query"));
 
-ANGLE_INSTANTIATE_TEST(TimerQueriesTestES3, ES3_D3D11(), ES3_OPENGL());
+    GLuint query = 0;
+    GLint result = 0;
+    glGenQueriesEXT(1, &query);
+    glBeginQueryEXT(GL_ANY_SAMPLES_PASSED, query);
+    glEndQueryEXT(GL_ANY_SAMPLES_PASSED);
+    glGetQueryObjectivEXT(query, GL_QUERY_RESULT_EXT, &result);
+    ASSERT_GL_NO_ERROR();
+
+    glQueryCounterEXT(query, GL_TIMESTAMP_EXT);
+    ASSERT_GL_ERROR(GL_INVALID_OPERATION);
+}
+
+// Tests glGetQueryivEXT with GL_QUERY_COUNTER_BITS_EXT works for all targets.
+TEST_P(TimerQueriesTest, QueryCounterBits)
+{
+    ANGLE_SKIP_TEST_IF(getClientMajorVersion() < 3);
+    ANGLE_SKIP_TEST_IF(!IsGLExtensionEnabled("GL_EXT_disjoint_timer_query"));
+    GLint result;
+
+    glGetQueryivEXT(GL_ANY_SAMPLES_PASSED, GL_QUERY_COUNTER_BITS_EXT, &result);
+    ASSERT_GL_NO_ERROR();
+    EXPECT_EQ(result, 1);
+
+    glGetQueryivEXT(GL_ANY_SAMPLES_PASSED_CONSERVATIVE, GL_QUERY_COUNTER_BITS_EXT, &result);
+    ASSERT_GL_NO_ERROR();
+    EXPECT_EQ(result, 1);
+
+    glGetQueryivEXT(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, GL_QUERY_COUNTER_BITS_EXT, &result);
+    ASSERT_GL_NO_ERROR();
+    EXPECT_EQ(result, 32);
+
+    // Value is returned from Vulkan, so we do not need to check the value since it can vary on
+    // different platforms
+    glGetQueryivEXT(GL_TIME_ELAPSED_EXT, GL_QUERY_COUNTER_BITS_EXT, &result);
+    ASSERT_GL_NO_ERROR();
+
+    glGetQueryivEXT(GL_TIMESTAMP_EXT, GL_QUERY_COUNTER_BITS_EXT, &result);
+    ASSERT_GL_NO_ERROR();
+}
+
+ANGLE_INSTANTIATE_TEST_ES2_AND(TimerstampQueriesTest,
+                               ES3_D3D11().disable(Feature::EnableTimestampQueries),
+                               ES3_D3D11().enable(Feature::EnableTimestampQueries));
+
+GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(TimestampQueriesTest);
+
+ANGLE_INSTANTIATE_TEST_ES2_AND_ES3(TimerQueriesTest);
+
+GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(TimerQueriesTestES3);
+ANGLE_INSTANTIATE_TEST_ES3(TimerQueriesTestES3);

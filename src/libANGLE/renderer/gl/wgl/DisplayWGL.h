@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2015 The ANGLE Project Authors. All rights reserved.
+// Copyright 2015 The ANGLE Project Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
@@ -9,6 +9,8 @@
 #ifndef LIBANGLE_RENDERER_GL_WGL_DISPLAYWGL_H_
 #define LIBANGLE_RENDERER_GL_WGL_DISPLAYWGL_H_
 
+#include <unordered_map>
+
 #include "libANGLE/renderer/gl/DisplayGL.h"
 
 #include <GL/wglext.h>
@@ -17,6 +19,7 @@ namespace rx
 {
 
 class FunctionsWGL;
+class RendererWGL;
 
 class DisplayWGL : public DisplayGL
 {
@@ -41,6 +44,12 @@ class DisplayWGL : public DisplayGL
                                      NativePixmapType nativePixmap,
                                      const egl::AttributeMap &attribs) override;
 
+    ContextImpl *createContext(const gl::State &state,
+                               gl::ErrorSet *errorSet,
+                               const egl::Config *configuration,
+                               const gl::Context *shareContext,
+                               const egl::AttributeMap &attribs) override;
+
     egl::ConfigSet generateConfigs() override;
 
     bool testDeviceLost() override;
@@ -52,22 +61,30 @@ class DisplayWGL : public DisplayGL
                                     EGLClientBuffer clientBuffer,
                                     const egl::AttributeMap &attribs) const override;
 
-    egl::Error getDevice(DeviceImpl **device) override;
+    egl::Error waitClient(const gl::Context *context) override;
+    egl::Error waitNative(const gl::Context *context, EGLint engine) override;
 
-    std::string getVendorString() const override;
-
-    egl::Error waitClient(const gl::Context *context) const override;
-    egl::Error waitNative(const gl::Context *context, EGLint engine) const override;
-
-    egl::Error makeCurrent(egl::Surface *drawSurface,
+    egl::Error makeCurrent(egl::Display *display,
+                           egl::Surface *drawSurface,
                            egl::Surface *readSurface,
                            gl::Context *context) override;
 
     egl::Error registerD3DDevice(IUnknown *device, HANDLE *outHandle);
     void releaseD3DDevice(HANDLE handle);
 
+    gl::Version getMaxSupportedESVersion() const override;
+
+    void destroyNativeContext(HGLRC context);
+
+    void initializeFrontendFeatures(angle::FrontendFeatures *features) const override;
+
+    void populateFeatureList(angle::FeatureList *features) override;
+
+    RendererGL *getRenderer() const override;
+
   private:
-    const FunctionsGL *getFunctionsGL() const override;
+    egl::Error initializeImpl(egl::Display *display);
+    void destroy();
 
     egl::Error initializeD3DDevice();
 
@@ -79,21 +96,30 @@ class DisplayWGL : public DisplayGL
     HGLRC initializeContextAttribs(const egl::AttributeMap &eglAttributes) const;
     HGLRC createContextAttribs(const gl::Version &version, int profileMask) const;
 
-    HDC mCurrentDC;
+    egl::Error createRenderer(std::shared_ptr<RendererWGL> *outRenderer);
+
+    std::shared_ptr<RendererWGL> mRenderer;
+
+    struct CurrentNativeContext
+    {
+        HDC dc     = nullptr;
+        HGLRC glrc = nullptr;
+    };
+    angle::HashMap<uint64_t, CurrentNativeContext> mCurrentNativeContexts;
 
     HMODULE mOpenGLModule;
 
     FunctionsWGL *mFunctionsWGL;
-    FunctionsGL *mFunctionsGL;
 
     bool mHasWGLCreateContextRobustness;
     bool mHasRobustness;
+
+    egl::AttributeMap mDisplayAttributes;
 
     ATOM mWindowClass;
     HWND mWindow;
     HDC mDeviceContext;
     int mPixelFormat;
-    HGLRC mWGLContext;
 
     bool mUseDXGISwapChains;
     bool mHasDXInterop;
@@ -101,6 +127,7 @@ class DisplayWGL : public DisplayGL
     HMODULE mD3d11Module;
     HANDLE mD3D11DeviceHandle;
     ID3D11Device *mD3D11Device;
+    ID3D11Device1 *mD3D11Device1;
 
     struct D3DObjectHandle
     {
@@ -108,10 +135,8 @@ class DisplayWGL : public DisplayGL
         size_t refCount;
     };
     std::map<IUnknown *, D3DObjectHandle> mRegisteredD3DDevices;
-
-    egl::Display *mDisplay;
 };
 
-}
+}  // namespace rx
 
-#endif // LIBANGLE_RENDERER_GL_WGL_DISPLAYWGL_H_
+#endif  // LIBANGLE_RENDERER_GL_WGL_DISPLAYWGL_H_

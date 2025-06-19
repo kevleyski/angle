@@ -21,9 +21,11 @@
 #ifndef TCU_ANGLE_WIN32_NATIVE_DISPLAY_FACTORY_H_
 #define TCU_ANGLE_WIN32_NATIVE_DISPLAY_FACTORY_H_
 
-#include "tcuDefs.hpp"
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include "egluNativeDisplay.hpp"
 #include "eglwDefs.hpp"
+#include "tcuDefs.hpp"
 
 namespace tcu
 {
@@ -31,10 +33,7 @@ namespace tcu
 class EventState
 {
   public:
-    EventState()
-        : mQuit(false)
-    {
-    }
+    EventState() : mQuit(false) {}
     bool quitSignaled() const { return mQuit; };
     void signalQuitEvent() { mQuit = true; };
 
@@ -47,16 +46,19 @@ class ANGLENativeDisplayFactory : public eglu::NativeDisplayFactory
   public:
     ANGLENativeDisplayFactory(const std::string &name,
                               const std::string &description,
-                              const std::vector<eglw::EGLAttrib> &platformAttributes,
-                              EventState *eventState);
+                              std::vector<eglw::EGLAttrib> platformAttributes,
+                              EventState *eventState,
+                              const EGLenum platformType = EGL_PLATFORM_ANGLE_ANGLE);
     ~ANGLENativeDisplayFactory() override;
 
-    eglu::NativeDisplay *createDisplay(const eglw::EGLAttrib* attribList) const override;
+    eglu::NativeDisplay *createDisplay(const eglw::EGLAttrib *attribList) const override;
 
   private:
+    eglw::EGLNativeDisplayType mNativeDisplay;
     std::vector<eglw::EGLAttrib> mPlatformAttributes;
+    EGLenum mPlatformType;
 };
 
-} // tcu
+}  // namespace tcu
 
-#endif // TCU_ANGLE_WIN32_NATIVE_DISPLAY_FACTORY_H_
+#endif  // TCU_ANGLE_WIN32_NATIVE_DISPLAY_FACTORY_H_

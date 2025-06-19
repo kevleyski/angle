@@ -9,18 +9,19 @@
 #include "common/angleutils.h"
 #include "test_utils/ANGLETest.h"
 #include "test_utils/gl_raii.h"
+#include "util/EGLWindow.h"
 
 using namespace angle;
 
 constexpr EGLint kEnabledCacheSize = 0x10000;
-constexpr char kEGLExtName[]       = "EGL_ANGLE_program_cache_control ";
+constexpr char kEGLExtName[]       = "EGL_ANGLE_program_cache_control";
 
 void TestCacheProgram(PlatformMethods *platform,
                       const ProgramKeyType &key,
                       size_t programSize,
                       const uint8_t *programBytes);
 
-class EGLProgramCacheControlTest : public ANGLETest
+class EGLProgramCacheControlTest : public ANGLETest<>
 {
   public:
     void onCache(const ProgramKeyType &key, size_t programSize, const uint8_t *programBytes)
@@ -30,35 +31,38 @@ class EGLProgramCacheControlTest : public ANGLETest
     }
 
   protected:
-    EGLProgramCacheControlTest() { setDeferContextInit(true); }
-
-    void SetUp() override
+    EGLProgramCacheControlTest()
     {
-        mPlatformMethods.cacheProgram = &TestCacheProgram;
+        // Test flakiness was noticed when reusing displays.
+        forceNewDisplay();
+        setDeferContextInit(true);
+        setContextProgramCacheEnabled(true);
+        gDefaultPlatformMethods.cacheProgram = TestCacheProgram;
+    }
 
-        ANGLETestBase::ANGLETestSetUp();
-
+    void testSetUp() override
+    {
         if (extensionAvailable())
         {
             EGLDisplay display = getEGLWindow()->getDisplay();
-            setContextProgramCacheEnabled(true);
             eglProgramCacheResizeANGLE(display, kEnabledCacheSize, EGL_PROGRAM_CACHE_RESIZE_ANGLE);
+            ASSERT_EGL_SUCCESS();
         }
 
-        getEGLWindow()->initializeContext();
+        ASSERT_TRUE(getEGLWindow()->initializeContext());
     }
 
-    void TearDown() override { ANGLETestBase::ANGLETestTearDown(); }
+    void testTearDown() override { gDefaultPlatformMethods.cacheProgram = DefaultCacheProgram; }
 
     bool extensionAvailable()
     {
         EGLDisplay display = getEGLWindow()->getDisplay();
-        return eglDisplayExtensionEnabled(display, kEGLExtName);
+        return IsEGLDisplayExtensionEnabled(display, kEGLExtName);
     }
 
     bool programBinaryAvailable()
     {
-        return (getClientMajorVersion() >= 3 || extensionEnabled("GL_OES_get_program_binary"));
+        return (getClientMajorVersion() >= 3 || IsGLExtensionEnabled("GL_OES_get_program_binary"));
     }
 
     ProgramKeyType mCachedKey;
@@ -174,27 +178,29 @@ TEST_P(EGLProgramCacheControlTest, NegativeAPI)
 // Tests a basic use case.
 TEST_P(EGLProgramCacheControlTest, SaveAndReload)
 {
+    ANGLE_SKIP_TEST_IF(getEGLWindow()->isFeatureEnabled(Feature::DisableProgramCaching));
+
     ANGLE_SKIP_TEST_IF(!extensionAvailable() || !programBinaryAvailable());
 
-    const std::string vertexShader =
-        "attribute vec4 position; void main() { gl_Position = position; }";
-    const std::string fragmentShader = "void main() { gl_FragColor = vec4(1, 0, 0, 1); }";
+    constexpr char kVS[] = "attribute vec4 position; void main() { gl_Position = position; }";
+    constexpr char kFS[] = "void main() { gl_FragColor = vec4(1, 0, 0, 1); }";
 
+    mCachedBinary.clear();
     // Link a program, which will miss the cache.
     {
         glClearColor(0.0f, 1.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::green);
 
-        ANGLE_GL_PROGRAM(program, vertexShader, fragmentShader);
+        ANGLE_GL_PROGRAM(program, kVS, kFS);
         drawQuad(program, "position", 0.5f);
         EXPECT_GL_NO_ERROR();
         EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::red);
     }
+    // Assert that the cache insertion added a program to the cache.
+    EXPECT_TRUE(!mCachedBinary.empty());
 
     EGLDisplay display = getEGLWindow()->getDisplay();
-    EGLint cacheSize   = eglProgramCacheGetAttribANGLE(display, EGL_PROGRAM_CACHE_SIZE_ANGLE);
-    EXPECT_EQ(1, cacheSize);
 
     EGLint keySize    = 0;
     EGLint binarySize = 0;
@@ -212,8 +218,7 @@ TEST_P(EGLProgramCacheControlTest, SaveAndReload)
     EXPECT_EQ(mCachedBinary, binaryBuffer);
 
     // Restart EGL and GL.
-    TearDown();
-    SetUp();
+    recreateTestFixture();
 
     // Warm up the cache.
     EGLint newCacheSize = eglProgramCacheGetAttribANGLE(display, EGL_PROGRAM_CACHE_SIZE_ANGLE);
@@ -229,7 +234,7 @@ TEST_P(EGLProgramCacheControlTest, SaveAndReload)
         glClear(GL_COLOR_BUFFER_BIT);
         EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::green);
 
-        ANGLE_GL_PROGRAM(program, vertexShader, fragmentShader);
+        ANGLE_GL_PROGRAM(program, kVS, kFS);
         drawQuad(program, "position", 0.5f);
         EXPECT_GL_NO_ERROR();
         EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::red);
@@ -239,4 +244,58 @@ TEST_P(EGLProgramCacheControlTest, SaveAndReload)
     EXPECT_TRUE(mCachedBinary.empty());
 }
 
-ANGLE_INSTANTIATE_TEST(EGLProgramCacheControlTest, ES2_D3D9(), ES2_D3D11(), ES2_OPENGL());
+// Tests that trying to link a program without correct shaders doesn't buggily call the cache.
+TEST_P(EGLProgramCacheControlTest, LinkProgramWithBadShaders)
+{
+    ANGLE_SKIP_TEST_IF(!extensionAvailable());
+
+    GLuint shader = glCreateShader(GL_FRAGMENT_SHADER);
+
+    GLuint program = glCreateProgram();
+    glAttachShader(program, shader);
+    glLinkProgram(program);
+
+    GLint linkStatus = 0;
+    glGetProgramiv(program, GL_LINK_STATUS, &linkStatus);
+    EXPECT_GL_FALSE(linkStatus);
+    EXPECT_GL_NO_ERROR();
+
+    glDeleteShader(shader);
+    glDeleteProgram(program);
+}
+
+// Tests the program cache can be disabled.
+TEST_P(EGLProgramCacheControlTest, DisableProgramCache)
+{
+    ANGLE_SKIP_TEST_IF(!extensionAvailable() || !programBinaryAvailable());
+
+    // Disable context program cache, and recreate context.
+    setContextProgramCacheEnabled(false);
+    recreateTestFixture();
+
+    constexpr char kVS[] = "attribute vec4 position; void main() { gl_Position = position; }";
+    constexpr char kFS[] = "void main() { gl_FragColor = vec4(1, 0, 0, 1); }";
+
+    mCachedBinary.clear();
+    // Link a program, which will miss the cache.
+    {
+        glClearColor(0.0f, 1.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::green);
+
+        ANGLE_GL_PROGRAM(program, kVS, kFS);
+        drawQuad(program, "position", 0.5f);
+        EXPECT_GL_NO_ERROR();
+        EXPECT_PIXEL_COLOR_EQ(0, 0, GLColor::red);
+    }
+
+    // Expect that no program binary was inserted into the cache.
+    EXPECT_TRUE(mCachedBinary.empty());
+}
+
+GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(EGLProgramCacheControlTest);
+ANGLE_INSTANTIATE_TEST(EGLProgramCacheControlTest,
+                       ES2_D3D9(),
+                       ES2_D3D11(),
+                       ES2_OPENGL(),
+                       ES2_VULKAN());

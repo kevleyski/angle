@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2017 The ANGLE Project Authors. All rights reserved.
+// Copyright 2017 The ANGLE Project Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
@@ -35,15 +35,20 @@ struct DrawElementsPerfParams final : public DrawCallPerfParams
         numTris        = 2;
     }
 
-    std::string suffix() const override
+    std::string story() const override
     {
         std::stringstream strstr;
 
-        strstr << DrawCallPerfParams::suffix();
+        strstr << DrawCallPerfParams::story();
 
         if (indexBufferChanged)
         {
             strstr << "_index_buffer_changed";
+        }
+
+        if (type == GL_UNSIGNED_SHORT)
+        {
+            strstr << "_ushort";
         }
 
         return strstr.str();
@@ -55,7 +60,7 @@ struct DrawElementsPerfParams final : public DrawCallPerfParams
 
 std::ostream &operator<<(std::ostream &os, const DrawElementsPerfParams &params)
 {
-    os << params.suffix().substr(1);
+    os << params.backendAndStory().substr(1);
     return os;
 }
 
@@ -75,21 +80,39 @@ class DrawElementsPerfBenchmark : public ANGLERenderTest,
     GLuint mIndexBuffer = 0;
     GLuint mFBO         = 0;
     GLuint mTexture     = 0;
+    GLsizei mBufferSize = 0;
     int mCount          = 3 * GetParam().numTris;
-    std::vector<GLuint> mIndexData;
+    std::vector<GLuint> mIntIndexData;
+    std::vector<GLushort> mShortIndexData;
 };
 
 DrawElementsPerfBenchmark::DrawElementsPerfBenchmark()
     : ANGLERenderTest("DrawElementsPerf", GetParam())
 {
-    mRunTimeSeconds = GetParam().runTimeSeconds;
+    if (GetParam().type == GL_UNSIGNED_INT)
+    {
+        addExtensionPrerequisite("GL_OES_element_index_uint");
+    }
+}
+
+GLsizei ElementTypeSize(GLenum elementType)
+{
+    switch (elementType)
+    {
+        case GL_UNSIGNED_BYTE:
+            return sizeof(GLubyte);
+        case GL_UNSIGNED_SHORT:
+            return sizeof(GLushort);
+        case GL_UNSIGNED_INT:
+            return sizeof(GLuint);
+        default:
+            return 0;
+    }
 }
 
 void DrawElementsPerfBenchmark::initializeBenchmark()
 {
     const auto &params = GetParam();
-
-    ASSERT_LT(0u, params.iterations);
 
     mProgram = SetupSimpleDrawProgram();
     ASSERT_NE(0u, mProgram);
@@ -101,11 +124,23 @@ void DrawElementsPerfBenchmark::initializeBenchmark()
 
     for (int i = 0; i < mCount; i++)
     {
-        mIndexData.push_back(rand() % mCount);
+        ASSERT_GE(std::numeric_limits<GLushort>::max(), mCount);
+        mShortIndexData.push_back(static_cast<GLushort>(rand() % mCount));
+        mIntIndexData.push_back(rand() % mCount);
     }
+
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mIndexBuffer);
-    glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, sizeof(params.type) * mIndexData.size(),
-                    mIndexData.data());
+
+    mBufferSize = ElementTypeSize(params.type) * mCount;
+
+    if (params.type == GL_UNSIGNED_INT)
+    {
+        glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, mBufferSize, mIntIndexData.data());
+    }
+    else
+    {
+        glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, mBufferSize, mShortIndexData.data());
+    }
 
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
     glEnableVertexAttribArray(0);
@@ -113,7 +148,7 @@ void DrawElementsPerfBenchmark::initializeBenchmark()
     // Set the viewport
     glViewport(0, 0, getWindow()->getWidth(), getWindow()->getHeight());
 
-    if (params.useFBO)
+    if (params.surfaceType == SurfaceType::Offscreen)
     {
         CreateColorFBO(getWindow()->getWidth(), getWindow()->getHeight(), &mTexture, &mFBO);
     }
@@ -143,43 +178,28 @@ void DrawElementsPerfBenchmark::drawBenchmark()
         glClear(GL_COLOR_BUFFER_BIT);
     }
 
-    const auto &params = GetParam();
+    const DrawElementsPerfParams &params = GetParam();
 
-    for (unsigned int it = 0; it < params.iterations; it++)
+    if (params.indexBufferChanged)
     {
-        if (params.indexBufferChanged)
+        const void *bufferData = (params.type == GL_UNSIGNED_INT)
+                                     ? static_cast<GLvoid *>(mIntIndexData.data())
+                                     : static_cast<GLvoid *>(mShortIndexData.data());
+        for (unsigned int it = 0; it < params.iterationsPerStep; it++)
         {
-            glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, sizeof(params.type) * mIndexData.size(),
-                            mIndexData.data());
+            glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, mBufferSize, bufferData);
+            glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(mCount), params.type, 0);
         }
-        glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(mCount), params.type, 0);
+    }
+    else
+    {
+        for (unsigned int it = 0; it < params.iterationsPerStep; it++)
+        {
+            glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(mCount), params.type, 0);
+        }
     }
 
     ASSERT_GL_NO_ERROR();
-}
-
-DrawElementsPerfParams DrawElementsPerfD3D11Params(bool indexBufferChanged)
-{
-    DrawElementsPerfParams params;
-    params.eglParameters      = angle::egl_platform::D3D11();
-    params.indexBufferChanged = indexBufferChanged;
-    return params;
-}
-
-DrawElementsPerfParams DrawElementsPerfD3D9Params(bool indexBufferChanged)
-{
-    DrawElementsPerfParams params;
-    params.eglParameters      = angle::egl_platform::D3D9();
-    params.indexBufferChanged = indexBufferChanged;
-    return params;
-}
-
-DrawElementsPerfParams DrawElementsPerfOpenGLParams(bool indexBufferChanged)
-{
-    DrawElementsPerfParams params;
-    params.eglParameters      = angle::egl_platform::OPENGL();
-    params.indexBufferChanged = indexBufferChanged;
-    return params;
 }
 
 TEST_P(DrawElementsPerfBenchmark, Run)
@@ -187,12 +207,37 @@ TEST_P(DrawElementsPerfBenchmark, Run)
     run();
 }
 
-ANGLE_INSTANTIATE_TEST(DrawElementsPerfBenchmark,
-                       DrawElementsPerfD3D9Params(false),
-                       DrawElementsPerfD3D9Params(true),
-                       DrawElementsPerfD3D11Params(false),
-                       DrawElementsPerfD3D11Params(true),
-                       DrawElementsPerfOpenGLParams(false),
-                       DrawElementsPerfOpenGLParams(true));
+using namespace angle;
+using namespace params;
+using P = DrawElementsPerfParams;
 
-}  // namespace
+P CombineIndexType(const P &in, GLenum indexType)
+{
+    P out    = in;
+    out.type = indexType;
+    return out;
+}
+
+P CombineIndexBufferChanged(const P &in, bool indexBufferChanged)
+{
+    P out                  = in;
+    out.indexBufferChanged = indexBufferChanged;
+
+    // Scale down iterations for slower tests.
+    if (indexBufferChanged)
+        out.iterationsPerStep /= 100;
+
+    return out;
+}
+
+std::vector<GLenum> gIndexTypes = {GL_UNSIGNED_INT, GL_UNSIGNED_SHORT};
+std::vector<P> gWithIndexType   = CombineWithValues({P()}, gIndexTypes, CombineIndexType);
+std::vector<P> gWithRenderer =
+    CombineWithFuncs(gWithIndexType, {D3D11<P>, GL<P>, Metal<P>, Vulkan<P>, WGL<P>});
+std::vector<P> gWithChange =
+    CombineWithValues(gWithRenderer, {false, true}, CombineIndexBufferChanged);
+std::vector<P> gWithDevice = CombineWithFuncs(gWithChange, {Passthrough<P>, NullDevice<P>});
+
+ANGLE_INSTANTIATE_TEST_ARRAY(DrawElementsPerfBenchmark, gWithDevice);
+
+}  // anonymous namespace

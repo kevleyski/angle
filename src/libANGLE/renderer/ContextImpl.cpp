@@ -9,105 +9,103 @@
 
 #include "libANGLE/renderer/ContextImpl.h"
 
+#include "common/base/anglebase/no_destructor.h"
+#include "libANGLE/Context.h"
+
 namespace rx
 {
+ContextImpl::ContextImpl(const gl::State &state, gl::ErrorSet *errorSet)
+    : mState(state), mMemoryProgramCache(nullptr), mErrors(errorSet)
+{}
 
-ContextImpl::ContextImpl(const gl::ContextState &state) : mState(state)
-{
-}
+ContextImpl::~ContextImpl() {}
 
-ContextImpl::~ContextImpl()
-{
-}
-
-void ContextImpl::stencilFillPath(const gl::Path *path, GLenum fillMode, GLuint mask)
+void ContextImpl::invalidateTexture(gl::TextureType target)
 {
     UNREACHABLE();
 }
 
-void ContextImpl::stencilStrokePath(const gl::Path *path, GLint reference, GLuint mask)
+angle::Result ContextImpl::startTiling(const gl::Context *context,
+                                       const gl::Rectangle &area,
+                                       GLbitfield preserveMask)
 {
     UNREACHABLE();
+    return angle::Result::Stop;
 }
 
-void ContextImpl::coverFillPath(const gl::Path *path, GLenum coverMode)
+angle::Result ContextImpl::endTiling(const gl::Context *context, GLbitfield preserveMask)
 {
     UNREACHABLE();
+    return angle::Result::Stop;
 }
 
-void ContextImpl::coverStrokePath(const gl::Path *path, GLenum coverMode)
+angle::Result ContextImpl::onUnMakeCurrent(const gl::Context *context)
+{
+    return angle::Result::Continue;
+}
+
+angle::Result ContextImpl::handleNoopDrawEvent()
+{
+    return angle::Result::Continue;
+}
+
+angle::Result ContextImpl::handleNoopMultiDrawEvent()
+{
+    return angle::Result::Continue;
+}
+
+void ContextImpl::setMemoryProgramCache(gl::MemoryProgramCache *memoryProgramCache)
+{
+    mMemoryProgramCache = memoryProgramCache;
+}
+
+void ContextImpl::handleError(GLenum errorCode,
+                              const char *message,
+                              const char *file,
+                              const char *function,
+                              unsigned int line)
+{
+    std::stringstream errorStream;
+    errorStream << "Internal error: " << gl::FmtHex(errorCode) << ": " << message;
+    mErrors->handleError(errorCode, errorStream.str().c_str(), file, function, line);
+}
+
+egl::ContextPriority ContextImpl::getContextPriority() const
+{
+    return egl::ContextPriority::Medium;
+}
+
+egl::Error ContextImpl::releaseHighPowerGPU(gl::Context *)
+{
+    return egl::NoError();
+}
+
+egl::Error ContextImpl::reacquireHighPowerGPU(gl::Context *)
+{
+    return egl::NoError();
+}
+
+void ContextImpl::acquireExternalContext(const gl::Context *context) {}
+
+void ContextImpl::releaseExternalContext(const gl::Context *context) {}
+
+angle::Result ContextImpl::acquireTextures(const gl::Context *context,
+                                           const gl::TextureBarrierVector &textureBarriers)
 {
     UNREACHABLE();
+    return angle::Result::Stop;
 }
 
-void ContextImpl::stencilThenCoverFillPath(const gl::Path *path,
-                                           GLenum fillMode,
-                                           GLuint mask,
-                                           GLenum coverMode)
+angle::Result ContextImpl::releaseTextures(const gl::Context *context,
+                                           gl::TextureBarrierVector *textureBarriers)
 {
     UNREACHABLE();
+    return angle::Result::Stop;
 }
 
-void ContextImpl::stencilThenCoverStrokePath(const gl::Path *path,
-                                             GLint reference,
-                                             GLuint mask,
-                                             GLenum coverMode)
+const angle::PerfMonitorCounterGroups &ContextImpl::getPerfMonitorCounters()
 {
-    UNREACHABLE();
+    static angle::base::NoDestructor<angle::PerfMonitorCounterGroups> sCounters;
+    return *sCounters;
 }
-
-void ContextImpl::coverFillPathInstanced(const std::vector<gl::Path *> &paths,
-                                         GLenum coverMode,
-                                         GLenum transformType,
-                                         const GLfloat *transformValues)
-{
-    UNREACHABLE();
-}
-
-void ContextImpl::coverStrokePathInstanced(const std::vector<gl::Path *> &paths,
-                                           GLenum coverMode,
-                                           GLenum transformType,
-                                           const GLfloat *transformValues)
-{
-    UNREACHABLE();
-}
-
-void ContextImpl::stencilFillPathInstanced(const std::vector<gl::Path *> &paths,
-                                           GLenum fillMode,
-                                           GLuint mask,
-                                           GLenum transformType,
-                                           const GLfloat *transformValues)
-{
-    UNREACHABLE();
-}
-
-void ContextImpl::stencilStrokePathInstanced(const std::vector<gl::Path *> &paths,
-                                             GLint reference,
-                                             GLuint mask,
-                                             GLenum transformType,
-                                             const GLfloat *transformValues)
-{
-    UNREACHABLE();
-}
-
-void ContextImpl::stencilThenCoverFillPathInstanced(const std::vector<gl::Path *> &paths,
-                                                    GLenum coverMode,
-                                                    GLenum fillMode,
-                                                    GLuint mask,
-                                                    GLenum transformType,
-                                                    const GLfloat *transformValues)
-{
-    UNREACHABLE();
-}
-
-void ContextImpl::stencilThenCoverStrokePathInstanced(const std::vector<gl::Path *> &paths,
-                                                      GLenum coverMode,
-                                                      GLint reference,
-                                                      GLuint mask,
-                                                      GLenum transformType,
-                                                      const GLfloat *transformValues)
-{
-    UNREACHABLE();
-}
-
 }  // namespace rx

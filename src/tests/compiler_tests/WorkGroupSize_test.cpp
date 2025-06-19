@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2015 The ANGLE Project Authors. All rights reserved.
+// Copyright 2015 The ANGLE Project Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
@@ -7,10 +7,10 @@
 // tests for local group size in a compute shader
 //
 
-#include "angle_gl.h"
-#include "gtest/gtest.h"
 #include "GLSLANG/ShaderLang.h"
-#include "compiler/translator/TranslatorESSL.h"
+#include "angle_gl.h"
+#include "compiler/translator/glsl/TranslatorESSL.h"
+#include "gtest/gtest.h"
 #include "tests/test_utils/compiler_test.h"
 
 using namespace sh;
@@ -35,10 +35,13 @@ class WorkGroupSizeTest : public testing::Test
     // Return true when compilation succeeds
     bool compile(const std::string &shaderString)
     {
+        ShCompileOptions compileOptions = {};
+        compileOptions.intermediateTree = true;
+
         const char *shaderStrings[] = {shaderString.c_str()};
-        bool status = mTranslator->compile(shaderStrings, 1, SH_INTERMEDIATE_TREE | SH_VARIABLES);
-        TInfoSink &infoSink = mTranslator->getInfoSink();
-        mInfoLog            = infoSink.info.c_str();
+        bool status                 = mTranslator->compile(shaderStrings, 1, compileOptions);
+        TInfoSink &infoSink         = mTranslator->getInfoSink();
+        mInfoLog                    = infoSink.info.c_str();
         return status;
     }
 

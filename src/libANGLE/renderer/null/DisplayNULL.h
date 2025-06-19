@@ -11,9 +11,15 @@
 #define LIBANGLE_RENDERER_NULL_DISPLAYNULL_H_
 
 #include "libANGLE/renderer/DisplayImpl.h"
+#include "libANGLE/renderer/ShareGroupImpl.h"
 
 namespace rx
 {
+class ShareGroupNULL : public ShareGroupImpl
+{
+  public:
+    ShareGroupNULL(const egl::ShareGroupState &state) : ShareGroupImpl(state) {}
+};
 
 class AllocationTrackerNULL;
 
@@ -26,7 +32,8 @@ class DisplayNULL : public DisplayImpl
     egl::Error initialize(egl::Display *display) override;
     void terminate() override;
 
-    egl::Error makeCurrent(egl::Surface *drawSurface,
+    egl::Error makeCurrent(egl::Display *display,
+                           egl::Surface *drawSurface,
                            egl::Surface *readSurface,
                            gl::Context *context) override;
 
@@ -37,13 +44,16 @@ class DisplayNULL : public DisplayImpl
 
     bool isValidNativeWindow(EGLNativeWindowType window) const override;
 
-    std::string getVendorString() const override;
+    std::string getRendererDescription() override;
+    std::string getVendorString() override;
+    std::string getVersionString(bool includeFullVersion) override;
 
-    egl::Error getDevice(DeviceImpl **device) override;
+    DeviceImpl *createDevice() override;
 
-    egl::Error waitClient(const gl::Context *context) const override;
-    egl::Error waitNative(const gl::Context *context, EGLint engine) const override;
+    egl::Error waitClient(const gl::Context *context) override;
+    egl::Error waitNative(const gl::Context *context, EGLint engine) override;
     gl::Version getMaxSupportedESVersion() const override;
+    gl::Version getMaxConformantESVersion() const override;
 
     SurfaceImpl *createWindowSurface(const egl::SurfaceState &state,
                                      EGLNativeWindowType window,
@@ -59,20 +69,26 @@ class DisplayNULL : public DisplayImpl
                                      const egl::AttributeMap &attribs) override;
 
     ImageImpl *createImage(const egl::ImageState &state,
+                           const gl::Context *context,
                            EGLenum target,
                            const egl::AttributeMap &attribs) override;
 
-    ContextImpl *createContext(const gl::ContextState &state) override;
+    ContextImpl *createContext(const gl::State &state,
+                               gl::ErrorSet *errorSet,
+                               const egl::Config *configuration,
+                               const gl::Context *shareContext,
+                               const egl::AttributeMap &attribs) override;
 
-    StreamProducerImpl *createStreamProducerD3DTextureNV12(
-        egl::Stream::ConsumerType consumerType,
-        const egl::AttributeMap &attribs) override;
+    StreamProducerImpl *createStreamProducerD3DTexture(egl::Stream::ConsumerType consumerType,
+                                                       const egl::AttributeMap &attribs) override;
+
+    ShareGroupImpl *createShareGroup(const egl::ShareGroupState &state) override;
+
+    void populateFeatureList(angle::FeatureList *features) override {}
 
   private:
     void generateExtensions(egl::DisplayExtensions *outExtensions) const override;
     void generateCaps(egl::Caps *outCaps) const override;
-
-    DeviceImpl *mDevice;
 
     std::unique_ptr<AllocationTrackerNULL> mAllocationTracker;
 };

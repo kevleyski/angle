@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2016 The ANGLE Project Authors. All rights reserved.
+// Copyright 2016 The ANGLE Project Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
@@ -24,17 +24,18 @@ class StrtofClampParser
     static float Parse(std::string str)
     {
         float value;
-        sh::strtof_clamp(str, &value);
+        sh::strtof_clamp(str, &value, true);
         return value;
     }
 };
 
-// NumericLexFloat32OutOfRangeToInfinity usually only comes to play in corner cases of parsing, but
-// it's useful to test that it works as expected across the whole range of floats.
 class NumericLexFloatParser
 {
   public:
-    static float Parse(std::string str) { return sh::NumericLexFloat32OutOfRangeToInfinity(str); }
+    static float Parse(std::string str)
+    {
+        return sh::NumericLexFloat32OutOfRangeToInfinity(str, true);
+    }
 };
 
 }  // anonymous namespace
@@ -65,7 +66,7 @@ class FloatLexTest : public ::testing::Test
 };
 
 typedef ::testing::Types<StrtofClampParser, NumericLexFloatParser> FloatParserTypes;
-TYPED_TEST_CASE(FloatLexTest, FloatParserTypes);
+TYPED_TEST_SUITE(FloatLexTest, FloatParserTypes);
 
 TYPED_TEST(FloatLexTest, One)
 {
@@ -153,6 +154,29 @@ TYPED_TEST(FloatLexTest, SlightlyAboveMaxFloat)
 TYPED_TEST(FloatLexTest, SlightlyBelowMaxFloat)
 {
     ASSERT_FALSE(TestFixture::IsInfinity("3.4028e38"));
+    ASSERT_TRUE(TestFixture::ParsedMatches("3.4028e38", 3.4028e38f));
+}
+
+TYPED_TEST(FloatLexTest, SlightlyAboveMaxFloatLargerMantissa)
+{
+    ASSERT_TRUE(TestFixture::IsInfinity("34.029e37"));
+}
+
+TYPED_TEST(FloatLexTest, SlightlyBelowMaxFloatLargerMantissa)
+{
+    ASSERT_FALSE(TestFixture::IsInfinity("34.028e37"));
+    ASSERT_TRUE(TestFixture::ParsedMatches("34.028e37", 3.4028e38f));
+}
+
+TYPED_TEST(FloatLexTest, SlightlyAboveMaxFloatSmallerMantissa)
+{
+    ASSERT_TRUE(TestFixture::IsInfinity("0.34029e39"));
+}
+
+TYPED_TEST(FloatLexTest, SlightlyBelowMaxFloatSmallerMantissa)
+{
+    ASSERT_FALSE(TestFixture::IsInfinity("0.34028e39"));
+    ASSERT_TRUE(TestFixture::ParsedMatches("0.34028e39", 3.4028e38f));
 }
 
 TYPED_TEST(FloatLexTest, SlightlyBelowMinSubnormalFloat)
@@ -162,7 +186,7 @@ TYPED_TEST(FloatLexTest, SlightlyBelowMinSubnormalFloat)
 
 TYPED_TEST(FloatLexTest, SlightlyAboveMinNormalFloat)
 {
-    ASSERT_FALSE(TestFixture::ParsedMatches("1.0e-37", 0.0f));
+    ASSERT_FALSE(TestFixture::ParsedMatches("1.1754943E-38", 0.0f));
 }
 
 TYPED_TEST(FloatLexTest, ManySignificantDigits)
@@ -192,4 +216,16 @@ TYPED_TEST(FloatLexTest, ExponentBitAboveMinIntAndSmallMantissa)
     std::stringstream ss;
     ss << "0." << TestFixture::Zeros(32) << "1e-2147483640";
     ASSERT_TRUE(TestFixture::ParsedMatches(ss.str(), 0.0f));
+}
+
+// Ensure the smallest possible denorm float value is preserved
+TYPED_TEST(FloatLexTest, SmallestPossibleDenormFloat)
+{
+    ASSERT_TRUE(TestFixture::ParsedMatches("1.40129846e-45", 1.40129846e-45f));
+}
+
+// Ensure the largest possible denorm float value is preserved
+TYPED_TEST(FloatLexTest, LargestPossibleDenormFloat)
+{
+    ASSERT_TRUE(TestFixture::ParsedMatches("1.1754942107e-38", 1.1754942107e-38f));
 }

@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2017 The ANGLE Project Authors. All rights reserved.
+// Copyright 2017 The ANGLE Project Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
@@ -25,13 +25,12 @@ class RewriteDoWhileCrashTest : public ShaderCompileTreeTest
 
     void SetUp() override
     {
-        mExtraCompileOptions |= SH_REWRITE_DO_WHILE_LOOPS;
+        mCompileOptions.rewriteDoWhileLoops = true;
         ShaderCompileTreeTest::SetUp();
     }
 };
 
-// Make sure that the RewriteDoWhile step doesn't crash due to creating temp symbols before calling
-// nextTemporaryId(). Regression test.
+// Make sure that the RewriteDoWhile step doesn't crash. Regression test.
 TEST_F(RewriteDoWhileCrashTest, RunsSuccessfully)
 {
     const std::string &shaderString =

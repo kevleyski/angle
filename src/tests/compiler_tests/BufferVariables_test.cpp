@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2017 The ANGLE Project Authors. All rights reserved.
+// Copyright 2017 The ANGLE Project Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
@@ -13,6 +13,7 @@
 #include "angle_gl.h"
 #include "gtest/gtest.h"
 #include "tests/test_utils/ShaderCompileTreeTest.h"
+#include "tests/test_utils/compiler_test.h"
 
 using namespace sh;
 
@@ -27,6 +28,15 @@ class BufferVariablesTest : public ShaderCompileTreeTest
     void initResources(ShBuiltInResources *resources) override
     {
         resources->MaxShaderStorageBufferBindings = 8;
+    }
+};
+
+class BufferVariablesMatchTest : public MatchOutputCodeTest
+{
+  public:
+    BufferVariablesMatchTest() : MatchOutputCodeTest(GL_VERTEX_SHADER, SH_ESSL_OUTPUT)
+    {
+        getResources()->MaxShaderStorageBufferBindings = 8;
     }
 };
 
@@ -205,6 +215,66 @@ TEST_F(BufferVariablesTest, AssignToBufferVariableWithinReadonlyBlock)
     }
 }
 
+// Test that can't assign to a readonly buffer variable through an instance name.
+TEST_F(BufferVariablesTest, AssignToReadonlyBufferVariableByInstanceName)
+{
+    const std::string &source =
+        R"(#version 310 es
+        layout(binding = 3) buffer buf {
+            readonly float f;
+        } instanceBuffer;
+        void main()
+        {
+            instanceBuffer.f += 0.2;
+        })";
+    if (compile(source))
+    {
+        FAIL() << "Shader compilation succeeded, expecting failure:\n" << mInfoLog;
+    }
+}
+
+// Test that can't assign to a readonly struct buffer variable.
+TEST_F(BufferVariablesTest, AssignToReadonlyStructBufferVariable)
+{
+    const std::string &source =
+        R"(#version 310 es
+        struct S {
+            float f;
+        };
+        layout(binding = 3) buffer buf {
+            readonly S s;
+        };
+        void main()
+        {
+            s.f += 0.2;
+        })";
+    if (compile(source))
+    {
+        FAIL() << "Shader compilation succeeded, expecting failure:\n" << mInfoLog;
+    }
+}
+
+// Test that can't assign to a readonly struct buffer variable through an instance name.
+TEST_F(BufferVariablesTest, AssignToReadonlyStructBufferVariableByInstanceName)
+{
+    const std::string &source =
+        R"(#version 310 es
+        struct S {
+            float f;
+        };
+        layout(binding = 3) buffer buf {
+            readonly S s;
+        } instanceBuffer;
+        void main()
+        {
+            instanceBuffer.s.f += 0.2;
+        })";
+    if (compile(source))
+    {
+        FAIL() << "Shader compilation succeeded, expecting failure:\n" << mInfoLog;
+    }
+}
+
 // Test that a readonly and writeonly buffer variable should neither read or write.
 TEST_F(BufferVariablesTest, AccessReadonlyWriteonlyBufferVariable)
 {
@@ -252,7 +322,7 @@ TEST_F(BufferVariablesTest, AccessReadonlyBufferVariableByInstanceName)
         "} instanceBuffer;\n"
         "void main()\n"
         "{\n"
-        "    float test = instanceBuffer.f;\n"
+        "    gl_Position.x = instanceBuffer.f;\n"
         "}\n";
     if (!compile(source))
     {
@@ -482,4 +552,133 @@ TEST_F(BufferVariablesTest, BufferQualifierOnFunctionParameter)
     {
         FAIL() << "Shader compilation succeeded, expecting failure:\n" << mInfoLog;
     }
+}
+
+// Test that std430 qualifier is supported for shader storage blocks.
+TEST_F(BufferVariablesTest, ShaderStorageBlockWithStd430)
+{
+    const std::string &source =
+        "#version 310 es\n"
+        "layout(std430) buffer buf {\n"
+        "    int b1;\n"
+        "    int b2;\n"
+        "};\n"
+        "void main()\n"
+        "{\n"
+        "}\n";
+    if (!compile(source))
+    {
+        FAIL() << "Shader compilation failed, expecting success:\n" << mInfoLog;
+    }
+}
+
+// Test that using std430 qualifier on a uniform block will fail to compile.
+TEST_F(BufferVariablesTest, UniformBlockWithStd430)
+{
+    const std::string &source =
+        "#version 310 es\n"
+        "layout(std430) uniform buf {\n"
+        "    int b1;\n"
+        "    int b2;\n"
+        "};\n"
+        "void main()\n"
+        "{\n"
+        "}\n";
+    if (compile(source))
+    {
+        FAIL() << "Shader compilation succeeded, expecting failure:\n" << mInfoLog;
+    }
+}
+
+// Test that indexing a runtime-sized array with a positive index compiles.
+TEST_F(BufferVariablesTest, IndexRuntimeSizedArray)
+{
+    const std::string &source =
+        R"(#version 310 es
+
+        layout(std430) buffer buf
+        {
+            int arr[];
+        };
+
+        void main()
+        {
+            arr[100];
+        })";
+    if (!compile(source))
+    {
+        FAIL() << "Shader compilation failed, expecting success:\n" << mInfoLog;
+    }
+}
+
+// Test that indexing a runtime-sized array with a negative constant index does not compile.
+TEST_F(BufferVariablesTest, IndexRuntimeSizedArrayWithNegativeIndex)
+{
+    const std::string &source =
+        R"(#version 310 es
+
+        layout(std430) buffer buf
+        {
+            int arr[];
+        };
+
+        void main()
+        {
+            arr[-1];
+        })";
+    if (compile(source))
+    {
+        FAIL() << "Shader compilation succeeded, expecting failure:\n" << mInfoLog;
+    }
+}
+
+// Test that only the last member of a buffer can be runtime-sized.
+TEST_F(BufferVariablesTest, RuntimeSizedVariableInNotLastInBuffer)
+{
+    const std::string &source =
+        R"(#version 310 es
+
+        layout(std430) buffer buf
+        {
+            int arr[];
+            int i;
+        };
+
+        void main()
+        {
+        })";
+    if (compile(source))
+    {
+        FAIL() << "Shader compilation succeeded, expecting failure:\n" << mInfoLog;
+    }
+}
+
+// Test that memory qualifiers are output.
+TEST_F(BufferVariablesMatchTest, MemoryQualifiers)
+{
+    const std::string &source =
+        R"(#version 310 es
+
+        layout(std430) coherent buffer buf
+        {
+            int defaultCoherent;
+            coherent ivec2 specifiedCoherent;
+            volatile ivec3 specifiedVolatile;
+            restrict ivec4 specifiedRestrict;
+            readonly float specifiedReadOnly;
+            writeonly vec2 specifiedWriteOnly;
+            volatile readonly vec3 specifiedMultiple;
+        };
+
+        void main()
+        {
+        })";
+    compile(source);
+    ASSERT_TRUE(foundInESSLCode("coherent highp int"));
+    ASSERT_TRUE(foundInESSLCode("coherent highp ivec2"));
+    ASSERT_TRUE(foundInESSLCode("coherent volatile highp ivec3"));
+    ASSERT_TRUE(foundInESSLCode("coherent restrict highp ivec4"));
+    ASSERT_TRUE(foundInESSLCode("readonly coherent highp float"));
+    ASSERT_TRUE(foundInESSLCode("writeonly coherent highp vec2"));
+    ASSERT_TRUE(foundInESSLCode("readonly coherent volatile highp vec3"));
 }

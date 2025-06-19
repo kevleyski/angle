@@ -1,11 +1,11 @@
 //
-// Copyright (c) 2002-2014 The ANGLE Project Authors. All rights reserved.
+// Copyright 2002 The ANGLE Project Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
 
-#include "compiler/translator/IntermTraverse.h"
 #include "compiler/translator/SymbolTable.h"
+#include "compiler/translator/tree_util/IntermTraverse.h"
 
 namespace sh
 {
@@ -13,11 +13,14 @@ namespace sh
 namespace
 {
 
-void OutputFunction(TInfoSinkBase &out, const char *str, TFunctionSymbolInfo *info)
+void OutputFunction(TInfoSinkBase &out, const char *prefix, const TFunction *function)
 {
-    const char *internal = info->getNameObj().isInternal() ? " (internal function)" : "";
-    out << str << internal << ": " << info->getNameObj().getString() << " (symbol id "
-        << info->getId().get() << ")";
+    out << prefix << ": " << static_cast<const TSymbol &>(*function);
+}
+
+void OutputVariable(TInfoSinkBase &out, const TVariable &variable)
+{
+    out << static_cast<const TSymbol &>(variable) << " (" << variable.getType() << ")";
 }
 
 // Two purposes:
@@ -30,7 +33,9 @@ void OutputFunction(TInfoSinkBase &out, const char *str, TFunctionSymbolInfo *in
 class TOutputTraverser : public TIntermTraverser
 {
   public:
-    TOutputTraverser(TInfoSinkBase &out) : TIntermTraverser(true, false, false), mOut(out) {}
+    TOutputTraverser(TInfoSinkBase &out)
+        : TIntermTraverser(true, false, false), mOut(out), mIndentDepth(0)
+    {}
 
   protected:
     void visitSymbol(TIntermSymbol *) override;
@@ -42,16 +47,20 @@ class TOutputTraverser : public TIntermTraverser
     bool visitIfElse(Visit visit, TIntermIfElse *node) override;
     bool visitSwitch(Visit visit, TIntermSwitch *node) override;
     bool visitCase(Visit visit, TIntermCase *node) override;
-    bool visitFunctionPrototype(Visit visit, TIntermFunctionPrototype *node) override;
+    void visitFunctionPrototype(TIntermFunctionPrototype *node) override;
     bool visitFunctionDefinition(Visit visit, TIntermFunctionDefinition *node) override;
     bool visitAggregate(Visit visit, TIntermAggregate *) override;
     bool visitBlock(Visit visit, TIntermBlock *) override;
-    bool visitInvariantDeclaration(Visit visit, TIntermInvariantDeclaration *node) override;
+    bool visitGlobalQualifierDeclaration(Visit visit,
+                                         TIntermGlobalQualifierDeclaration *node) override;
     bool visitDeclaration(Visit visit, TIntermDeclaration *node) override;
     bool visitLoop(Visit visit, TIntermLoop *) override;
     bool visitBranch(Visit visit, TIntermBranch *) override;
 
+    int getCurrentIndentDepth() const { return mIndentDepth + getCurrentTraversalDepth(); }
+
     TInfoSinkBase &mOut;
+    int mIndentDepth;
 };
 
 //
@@ -78,29 +87,26 @@ void OutputTreeText(TInfoSinkBase &out, TIntermNode *node, const int depth)
 
 void TOutputTraverser::visitSymbol(TIntermSymbol *node)
 {
-    OutputTreeText(mOut, node, mDepth);
-
-    mOut << "'" << node->getSymbol() << "' ";
-    mOut << "(symbol id " << node->getId() << ") ";
-    mOut << "(" << node->getCompleteString() << ")";
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
+    OutputVariable(mOut, node->variable());
     mOut << "\n";
 }
 
 bool TOutputTraverser::visitSwizzle(Visit visit, TIntermSwizzle *node)
 {
-    OutputTreeText(mOut, node, mDepth);
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
     mOut << "vector swizzle (";
     node->writeOffsetsAsXYZW(&mOut);
     mOut << ")";
 
-    mOut << " (" << node->getCompleteString() << ")";
+    mOut << " (" << node->getType() << ")";
     mOut << "\n";
     return true;
 }
 
 bool TOutputTraverser::visitBinary(Visit visit, TIntermBinary *node)
 {
-    OutputTreeText(mOut, node, mDepth);
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
 
     switch (node->getOp())
     {
@@ -248,7 +254,7 @@ bool TOutputTraverser::visitBinary(Visit visit, TIntermBinary *node)
             mOut << "<unknown op>";
     }
 
-    mOut << " (" << node->getCompleteString() << ")";
+    mOut << " (" << node->getType() << ")";
 
     mOut << "\n";
 
@@ -262,10 +268,10 @@ bool TOutputTraverser::visitBinary(Visit visit, TIntermBinary *node)
         TIntermConstantUnion *intermConstantUnion = node->getRight()->getAsConstantUnion();
         ASSERT(intermConstantUnion);
 
-        OutputTreeText(mOut, intermConstantUnion, mDepth + 1);
+        OutputTreeText(mOut, intermConstantUnion, getCurrentIndentDepth() + 1);
 
         // The following code finds the field name from the constant union
-        const TConstantUnion *constantUnion   = intermConstantUnion->getUnionArrayPointer();
+        const TConstantUnion *constantUnion   = intermConstantUnion->getConstantValue();
         const TStructure *structure           = node->getLeft()->getType().getStruct();
         const TInterfaceBlock *interfaceBlock = node->getLeft()->getType().getInterfaceBlock();
         ASSERT(structure || interfaceBlock);
@@ -286,9 +292,11 @@ bool TOutputTraverser::visitBinary(Visit visit, TIntermBinary *node)
 
 bool TOutputTraverser::visitUnary(Visit visit, TIntermUnary *node)
 {
-    OutputTreeText(mOut, node, mDepth);
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
 
-    switch (node->getOp())
+    const TOperator op = node->getOp();
+
+    switch (op)
     {
         // Give verbose names for ops that have special syntax and some built-in functions that are
         // easy to confuse with others, but mostly use GLSL names for functions.
@@ -318,16 +326,27 @@ bool TOutputTraverser::visitUnary(Visit visit, TIntermUnary *node)
             mOut << "Pre-Decrement";
             break;
 
-        case EOpLogicalNotComponentWise:
+        case EOpArrayLength:
+            mOut << "Array length";
+            break;
+
+        case EOpNotComponentWise:
             mOut << "component-wise not";
             break;
 
         default:
-            mOut << GetOperatorString(node->getOp());
+            if (BuiltInGroup::IsBuiltIn(op))
+            {
+                OutputFunction(mOut, "Call a built-in function", node->getFunction());
+            }
+            else
+            {
+                mOut << GetOperatorString(node->getOp());
+            }
             break;
     }
 
-    mOut << " (" << node->getCompleteString() << ")";
+    mOut << " (" << node->getType() << ")";
 
     mOut << "\n";
 
@@ -336,34 +355,50 @@ bool TOutputTraverser::visitUnary(Visit visit, TIntermUnary *node)
 
 bool TOutputTraverser::visitFunctionDefinition(Visit visit, TIntermFunctionDefinition *node)
 {
-    OutputTreeText(mOut, node, mDepth);
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
     mOut << "Function Definition:\n";
-    mOut << "\n";
     return true;
 }
 
-bool TOutputTraverser::visitInvariantDeclaration(Visit visit, TIntermInvariantDeclaration *node)
+bool TOutputTraverser::visitGlobalQualifierDeclaration(Visit visit,
+                                                       TIntermGlobalQualifierDeclaration *node)
 {
-    OutputTreeText(mOut, node, mDepth);
-    mOut << "Invariant Declaration:\n";
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
+    if (node->isPrecise())
+    {
+        mOut << "Precise Declaration:\n";
+    }
+    else
+    {
+        mOut << "Invariant Declaration:\n";
+    }
     return true;
 }
 
-bool TOutputTraverser::visitFunctionPrototype(Visit visit, TIntermFunctionPrototype *node)
+void TOutputTraverser::visitFunctionPrototype(TIntermFunctionPrototype *node)
 {
-    OutputTreeText(mOut, node, mDepth);
-    OutputFunction(mOut, "Function Prototype", node->getFunctionSymbolInfo());
-    mOut << " (" << node->getCompleteString() << ")";
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
+    OutputFunction(mOut, "Function Prototype", node->getFunction());
+    mOut << " (" << node->getType() << ")";
     mOut << "\n";
-
-    return true;
+    size_t paramCount = node->getFunction()->getParamCount();
+    for (size_t i = 0; i < paramCount; ++i)
+    {
+        const TVariable *param = node->getFunction()->getParam(i);
+        OutputTreeText(mOut, node, getCurrentIndentDepth() + 1);
+        mOut << "parameter: ";
+        OutputVariable(mOut, *param);
+        mOut << "\n";
+    }
 }
 
 bool TOutputTraverser::visitAggregate(Visit visit, TIntermAggregate *node)
 {
-    OutputTreeText(mOut, node, mDepth);
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
 
-    if (node->getOp() == EOpNull)
+    const TOperator op = node->getOp();
+
+    if (op == EOpNull)
     {
         mOut.prefix(SH_ERROR);
         mOut << "node is still EOpNull!\n";
@@ -372,17 +407,14 @@ bool TOutputTraverser::visitAggregate(Visit visit, TIntermAggregate *node)
 
     // Give verbose names for some built-in functions that are easy to confuse with others, but
     // mostly use GLSL names for functions.
-    switch (node->getOp())
+    switch (op)
     {
         case EOpCallFunctionInAST:
-            OutputFunction(mOut, "Call an user-defined function", node->getFunctionSymbolInfo());
+            OutputFunction(mOut, "Call a function", node->getFunction());
             break;
         case EOpCallInternalRawFunction:
             OutputFunction(mOut, "Call an internal function with raw implementation",
-                           node->getFunctionSymbolInfo());
-            break;
-        case EOpCallBuiltInFunction:
-            OutputFunction(mOut, "Call a built-in function", node->getFunctionSymbolInfo());
+                           node->getFunction());
             break;
 
         case EOpConstruct:
@@ -415,16 +447,23 @@ bool TOutputTraverser::visitAggregate(Visit visit, TIntermAggregate *node)
         case EOpCross:
             mOut << "cross product";
             break;
-        case EOpMulMatrixComponentWise:
+        case EOpMatrixCompMult:
             mOut << "component-wise multiply";
             break;
 
         default:
-            mOut << GetOperatorString(node->getOp());
+            if (BuiltInGroup::IsBuiltIn(op))
+            {
+                OutputFunction(mOut, "Call a built-in function", node->getFunction());
+            }
+            else
+            {
+                mOut << GetOperatorString(node->getOp());
+            }
             break;
     }
 
-    mOut << " (" << node->getCompleteString() << ")";
+    mOut << " (" << node->getType() << ")";
 
     mOut << "\n";
 
@@ -433,7 +472,7 @@ bool TOutputTraverser::visitAggregate(Visit visit, TIntermAggregate *node)
 
 bool TOutputTraverser::visitBlock(Visit visit, TIntermBlock *node)
 {
-    OutputTreeText(mOut, node, mDepth);
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
     mOut << "Code block\n";
 
     return true;
@@ -441,7 +480,7 @@ bool TOutputTraverser::visitBlock(Visit visit, TIntermBlock *node)
 
 bool TOutputTraverser::visitDeclaration(Visit visit, TIntermDeclaration *node)
 {
-    OutputTreeText(mOut, node, mDepth);
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
     mOut << "Declaration\n";
 
     return true;
@@ -449,18 +488,18 @@ bool TOutputTraverser::visitDeclaration(Visit visit, TIntermDeclaration *node)
 
 bool TOutputTraverser::visitTernary(Visit visit, TIntermTernary *node)
 {
-    OutputTreeText(mOut, node, mDepth);
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
 
     mOut << "Ternary selection";
-    mOut << " (" << node->getCompleteString() << ")\n";
+    mOut << " (" << node->getType() << ")\n";
 
-    ++mDepth;
+    ++mIndentDepth;
 
-    OutputTreeText(mOut, node, mDepth);
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
     mOut << "Condition\n";
     node->getCondition()->traverse(this);
 
-    OutputTreeText(mOut, node, mDepth);
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
     if (node->getTrueExpression())
     {
         mOut << "true case\n";
@@ -468,29 +507,29 @@ bool TOutputTraverser::visitTernary(Visit visit, TIntermTernary *node)
     }
     if (node->getFalseExpression())
     {
-        OutputTreeText(mOut, node, mDepth);
+        OutputTreeText(mOut, node, getCurrentIndentDepth());
         mOut << "false case\n";
         node->getFalseExpression()->traverse(this);
     }
 
-    --mDepth;
+    --mIndentDepth;
 
     return false;
 }
 
 bool TOutputTraverser::visitIfElse(Visit visit, TIntermIfElse *node)
 {
-    OutputTreeText(mOut, node, mDepth);
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
 
     mOut << "If test\n";
 
-    ++mDepth;
+    ++mIndentDepth;
 
-    OutputTreeText(mOut, node, mDepth);
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
     mOut << "Condition\n";
     node->getCondition()->traverse(this);
 
-    OutputTreeText(mOut, node, mDepth);
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
     if (node->getTrueBlock())
     {
         mOut << "true case\n";
@@ -503,19 +542,19 @@ bool TOutputTraverser::visitIfElse(Visit visit, TIntermIfElse *node)
 
     if (node->getFalseBlock())
     {
-        OutputTreeText(mOut, node, mDepth);
+        OutputTreeText(mOut, node, getCurrentIndentDepth());
         mOut << "false case\n";
         node->getFalseBlock()->traverse(this);
     }
 
-    --mDepth;
+    --mIndentDepth;
 
     return false;
 }
 
 bool TOutputTraverser::visitSwitch(Visit visit, TIntermSwitch *node)
 {
-    OutputTreeText(mOut, node, mDepth);
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
 
     mOut << "Switch\n";
 
@@ -524,7 +563,7 @@ bool TOutputTraverser::visitSwitch(Visit visit, TIntermSwitch *node)
 
 bool TOutputTraverser::visitCase(Visit visit, TIntermCase *node)
 {
-    OutputTreeText(mOut, node, mDepth);
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
 
     if (node->getCondition() == nullptr)
     {
@@ -540,39 +579,40 @@ bool TOutputTraverser::visitCase(Visit visit, TIntermCase *node)
 
 void TOutputTraverser::visitConstantUnion(TIntermConstantUnion *node)
 {
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
+    mOut << "Constant union" << " (" << node->getType() << ")" << "\n";
+    ++mIndentDepth;
     size_t size = node->getType().getObjectSize();
 
     for (size_t i = 0; i < size; i++)
     {
-        OutputTreeText(mOut, node, mDepth);
-        switch (node->getUnionArrayPointer()[i].getType())
+        OutputTreeText(mOut, node, getCurrentIndentDepth());
+        switch (node->getConstantValue()[i].getType())
         {
             case EbtBool:
-                if (node->getUnionArrayPointer()[i].getBConst())
+                if (node->getConstantValue()[i].getBConst())
                     mOut << "true";
                 else
                     mOut << "false";
 
-                mOut << " ("
-                     << "const bool"
-                     << ")";
+                mOut << " (" << "const bool" << ")";
                 mOut << "\n";
                 break;
             case EbtFloat:
-                mOut << node->getUnionArrayPointer()[i].getFConst();
+                mOut << node->getConstantValue()[i].getFConst();
                 mOut << " (const float)\n";
                 break;
             case EbtInt:
-                mOut << node->getUnionArrayPointer()[i].getIConst();
+                mOut << node->getConstantValue()[i].getIConst();
                 mOut << " (const int)\n";
                 break;
             case EbtUInt:
-                mOut << node->getUnionArrayPointer()[i].getUConst();
+                mOut << node->getConstantValue()[i].getUConst();
                 mOut << " (const uint)\n";
                 break;
             case EbtYuvCscStandardEXT:
                 mOut << getYuvCscStandardEXTString(
-                    node->getUnionArrayPointer()[i].getYuvCscStandardEXTConst());
+                    node->getConstantValue()[i].getYuvCscStandardEXTConst());
                 mOut << " (const yuvCscStandardEXT)\n";
                 break;
             default:
@@ -581,20 +621,21 @@ void TOutputTraverser::visitConstantUnion(TIntermConstantUnion *node)
                 break;
         }
     }
+    --mIndentDepth;
 }
 
 bool TOutputTraverser::visitLoop(Visit visit, TIntermLoop *node)
 {
-    OutputTreeText(mOut, node, mDepth);
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
 
     mOut << "Loop with condition ";
     if (node->getType() == ELoopDoWhile)
         mOut << "not ";
     mOut << "tested first\n";
 
-    ++mDepth;
+    ++mIndentDepth;
 
-    OutputTreeText(mOut, node, mDepth);
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
     if (node->getCondition())
     {
         mOut << "Loop Condition\n";
@@ -605,32 +646,25 @@ bool TOutputTraverser::visitLoop(Visit visit, TIntermLoop *node)
         mOut << "No loop condition\n";
     }
 
-    OutputTreeText(mOut, node, mDepth);
-    if (node->getBody())
-    {
-        mOut << "Loop Body\n";
-        node->getBody()->traverse(this);
-    }
-    else
-    {
-        mOut << "No loop body\n";
-    }
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
+    mOut << "Loop Body\n";
+    node->getBody()->traverse(this);
 
     if (node->getExpression())
     {
-        OutputTreeText(mOut, node, mDepth);
+        OutputTreeText(mOut, node, getCurrentIndentDepth());
         mOut << "Loop Terminal Expression\n";
         node->getExpression()->traverse(this);
     }
 
-    --mDepth;
+    --mIndentDepth;
 
     return false;
 }
 
 bool TOutputTraverser::visitBranch(Visit visit, TIntermBranch *node)
 {
-    OutputTreeText(mOut, node, mDepth);
+    OutputTreeText(mOut, node, getCurrentIndentDepth());
 
     switch (node->getFlowOp())
     {
@@ -654,9 +688,9 @@ bool TOutputTraverser::visitBranch(Visit visit, TIntermBranch *node)
     if (node->getExpression())
     {
         mOut << " with expression\n";
-        ++mDepth;
+        ++mIndentDepth;
         node->getExpression()->traverse(this);
-        --mDepth;
+        --mIndentDepth;
     }
     else
     {

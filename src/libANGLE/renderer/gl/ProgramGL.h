@@ -12,13 +12,19 @@
 #include <string>
 #include <vector>
 
-#include "libANGLE/renderer/gl/WorkaroundsGL.h"
 #include "libANGLE/renderer/ProgramImpl.h"
+#include "libANGLE/renderer/gl/ProgramExecutableGL.h"
+
+namespace angle
+{
+struct FeaturesGL;
+}  // namespace angle
 
 namespace rx
 {
 
 class FunctionsGL;
+class RendererGL;
 class StateManagerGL;
 
 class ProgramGL : public ProgramImpl
@@ -26,86 +32,82 @@ class ProgramGL : public ProgramImpl
   public:
     ProgramGL(const gl::ProgramState &data,
               const FunctionsGL *functions,
-              const WorkaroundsGL &workarounds,
+              const angle::FeaturesGL &features,
               StateManagerGL *stateManager,
-              bool enablePathRendering);
+              const std::shared_ptr<RendererGL> &renderer);
     ~ProgramGL() override;
 
-    gl::LinkResult load(const gl::Context *contextImpl,
-                        gl::InfoLog &infoLog,
-                        gl::BinaryInputStream *stream) override;
+    void destroy(const gl::Context *context) override;
+
+    angle::Result load(const gl::Context *context,
+                       gl::BinaryInputStream *stream,
+                       std::shared_ptr<LinkTask> *loadTaskOut,
+                       egl::CacheGetResult *resultOut) override;
     void save(const gl::Context *context, gl::BinaryOutputStream *stream) override;
     void setBinaryRetrievableHint(bool retrievable) override;
     void setSeparable(bool separable) override;
 
-    gl::LinkResult link(const gl::Context *contextImpl,
-                        const gl::VaryingPacking &packing,
-                        gl::InfoLog &infoLog) override;
-    GLboolean validate(const gl::Caps &caps, gl::InfoLog *infoLog) override;
+    void prepareForLink(const gl::ShaderMap<ShaderImpl *> &shaders) override;
+    angle::Result link(const gl::Context *contextImpl,
+                       std::shared_ptr<LinkTask> *linkTaskOut) override;
+    GLboolean validate(const gl::Caps &caps) override;
 
-    void setUniform1fv(GLint location, GLsizei count, const GLfloat *v) override;
-    void setUniform2fv(GLint location, GLsizei count, const GLfloat *v) override;
-    void setUniform3fv(GLint location, GLsizei count, const GLfloat *v) override;
-    void setUniform4fv(GLint location, GLsizei count, const GLfloat *v) override;
-    void setUniform1iv(GLint location, GLsizei count, const GLint *v) override;
-    void setUniform2iv(GLint location, GLsizei count, const GLint *v) override;
-    void setUniform3iv(GLint location, GLsizei count, const GLint *v) override;
-    void setUniform4iv(GLint location, GLsizei count, const GLint *v) override;
-    void setUniform1uiv(GLint location, GLsizei count, const GLuint *v) override;
-    void setUniform2uiv(GLint location, GLsizei count, const GLuint *v) override;
-    void setUniform3uiv(GLint location, GLsizei count, const GLuint *v) override;
-    void setUniform4uiv(GLint location, GLsizei count, const GLuint *v) override;
-    void setUniformMatrix2fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) override;
-    void setUniformMatrix3fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) override;
-    void setUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) override;
-    void setUniformMatrix2x3fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) override;
-    void setUniformMatrix3x2fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) override;
-    void setUniformMatrix2x4fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) override;
-    void setUniformMatrix4x2fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) override;
-    void setUniformMatrix3x4fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) override;
-    void setUniformMatrix4x3fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) override;
+    void markUnusedUniformLocations(std::vector<gl::VariableLocation> *uniformLocations,
+                                    std::vector<gl::SamplerBinding> *samplerBindings,
+                                    std::vector<gl::ImageBinding> *imageBindings) override;
 
-    void setUniformBlockBinding(GLuint uniformBlockIndex, GLuint uniformBlockBinding) override;
+    ANGLE_INLINE GLuint getProgramID() const { return mProgramID; }
 
-    bool getUniformBlockSize(const std::string &blockName, size_t *sizeOut) const override;
-    bool getUniformBlockMemberInfo(const std::string &memberUniformName,
-                                   sh::BlockMemberInfo *memberInfoOut) const override;
+    void onUniformBlockBinding(gl::UniformBlockIndex uniformBlockIndex) override;
 
-    void setPathFragmentInputGen(const std::string &inputName,
-                                 GLenum genMode,
-                                 GLint components,
-                                 const GLfloat *coeffs) override;
-
-    GLuint getProgramID() const;
+    const ProgramExecutableGL *getExecutable() const
+    {
+        return GetImplAs<ProgramExecutableGL>(&mState.getExecutable());
+    }
+    ProgramExecutableGL *getExecutable()
+    {
+        return GetImplAs<ProgramExecutableGL>(&mState.getExecutable());
+    }
 
   private:
-    void preLink();
-    bool checkLinkStatus(gl::InfoLog &infoLog);
-    void postLink();
-    void reapplyUBOBindingsIfNeeded(const gl::Context *context);
+    class LinkTaskGL;
+    class PostLinkGL;
 
-    // Helper function, makes it simpler to type.
-    GLint uniLoc(GLint glLocation) const { return mUniformRealLocationMap[glLocation]; }
+    friend class LinkTaskGL;
+    friend class PostLinkGL;
+
+    angle::Result linkJobImpl(const gl::Extensions &extensions);
+    angle::Result postLinkJobImpl(const gl::ProgramLinkedResources &resources);
+
+    bool checkLinkStatus();
+
+    bool getUniformBlockSize(const std::string &blockName,
+                             const std::string &blockMappedName,
+                             size_t *sizeOut) const;
+    bool getUniformBlockMemberInfo(const std::string &memberUniformName,
+                                   const std::string &memberUniformMappedName,
+                                   sh::BlockMemberInfo *memberInfoOut) const;
+    bool getShaderStorageBlockMemberInfo(const std::string &memberName,
+                                         const std::string &memberMappedName,
+                                         sh::BlockMemberInfo *memberInfoOut) const;
+    bool getShaderStorageBlockSize(const std::string &blockName,
+                                   const std::string &blockMappedName,
+                                   size_t *sizeOut) const;
+    void getAtomicCounterBufferSizeMap(std::map<int, unsigned int> *sizeMapOut) const;
+
+    void linkResources(const gl::ProgramLinkedResources &resources);
 
     const FunctionsGL *mFunctions;
-    const WorkaroundsGL &mWorkarounds;
+    const angle::FeaturesGL &mFeatures;
     StateManagerGL *mStateManager;
 
-    std::vector<GLint> mUniformRealLocationMap;
-    std::vector<GLuint> mUniformBlockRealLocationMap;
-
-    struct PathRenderingFragmentInput
-    {
-        std::string name;
-        GLint location;
-    };
-    std::vector<PathRenderingFragmentInput> mPathRenderingFragmentInputs;
-
-    bool mEnablePathRendering;
+    gl::ShaderMap<GLuint> mAttachedShaders;
 
     GLuint mProgramID;
+
+    std::shared_ptr<RendererGL> mRenderer;
 };
 
-}
+}  // namespace rx
 
-#endif // LIBANGLE_RENDERER_GL_PROGRAMGL_H_
+#endif  // LIBANGLE_RENDERER_GL_PROGRAMGL_H_

@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2014 The ANGLE Project Authors. All rights reserved.
+// Copyright 2014 The ANGLE Project Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
@@ -8,10 +8,10 @@
 //   precision.
 //
 
-#include "angle_gl.h"
-#include "gtest/gtest.h"
 #include "GLSLANG/ShaderLang.h"
-#include "compiler/translator/TranslatorESSL.h"
+#include "angle_gl.h"
+#include "compiler/translator/glsl/TranslatorESSL.h"
+#include "gtest/gtest.h"
 
 using namespace sh;
 
@@ -33,25 +33,27 @@ class TypeTrackingTest : public testing::Test
 
     void TearDown() override { delete mTranslator; }
 
-    void compile(const std::string& shaderString)
+    void compile(const std::string &shaderString)
     {
-        const char *shaderStrings[] = { shaderString.c_str() };
-        bool compilationSuccess = mTranslator->compile(shaderStrings, 1, SH_INTERMEDIATE_TREE);
-        TInfoSink &infoSink = mTranslator->getInfoSink();
+        ShCompileOptions compileOptions = {};
+        compileOptions.intermediateTree = true;
+
+        const char *shaderStrings[] = {shaderString.c_str()};
+        bool compilationSuccess     = mTranslator->compile(shaderStrings, 1, compileOptions);
+        TInfoSink &infoSink         = mTranslator->getInfoSink();
         mInfoLog                    = RemoveSymbolIdsFromInfoLog(infoSink.info.c_str());
         if (!compilationSuccess)
             FAIL() << "Shader compilation failed " << mInfoLog;
     }
 
-    bool foundErrorInIntermediateTree() const
-    {
-        return foundInIntermediateTree("ERROR:");
-    }
+    bool foundErrorInIntermediateTree() const { return foundInIntermediateTree("ERROR:"); }
 
-    bool foundInIntermediateTree(const char* stringToFind) const
+    bool foundInIntermediateTree(const char *stringToFind) const
     {
         return mInfoLog.find(stringToFind) != std::string::npos;
     }
+
+    std::string getOutput() const { return mInfoLog; }
 
   private:
     // Remove symbol ids from info log - the tests don't care about them.
@@ -90,7 +92,7 @@ TEST_F(TypeTrackingTest, FunctionPrototype)
         "}\n";
     compile(shaderString);
     ASSERT_FALSE(foundErrorInIntermediateTree());
-    ASSERT_TRUE(foundInIntermediateTree("Function Prototype: fun"));
+    ASSERT_TRUE(foundInIntermediateTree("Function Prototype: 'fun'"));
 }
 
 TEST_F(TypeTrackingTest, BuiltInFunctionResultPrecision)
@@ -153,7 +155,8 @@ TEST_F(TypeTrackingTest, BuiltInMatFunctionResultTypeAndPrecision)
         "   mat2x4 tmp24 = mat2x4(m);\n"
         "   mat4x3 tmp43 = mat4x3(m);\n"
         "   mat3x4 tmp34 = mat3x4(m);\n"
-        "   my_FragColor = vec4(tmp32[2][1] * tmp23[1][2], tmp42[3][1] * tmp24[1][3], tmp43[3][2] * tmp34[2][3], 1.0);\n"
+        "   my_FragColor = vec4(tmp32[2][1] * tmp23[1][2], tmp42[3][1] * tmp24[1][3], tmp43[3][2] "
+        "* tmp34[2][3], 1.0);\n"
         "}\n";
     compile(shaderString);
     ASSERT_FALSE(foundErrorInIntermediateTree());
@@ -222,7 +225,8 @@ TEST_F(TypeTrackingTest, BuiltInVecToBoolFunctionResultType)
 TEST_F(TypeTrackingTest, Texture2DResultTypeAndPrecision)
 {
     // ESSL spec section 4.5.3: sampler2D and samplerCube are lowp by default
-    // ESSL spec section 8: For the texture functions, the precision of the return type matches the precision of the sampler type.
+    // ESSL spec section 8: For the texture functions, the precision of the return type matches the
+    // precision of the sampler type.
     const std::string &shaderString =
         "precision mediump float;\n"
         "uniform sampler2D s;\n"
@@ -239,7 +243,8 @@ TEST_F(TypeTrackingTest, Texture2DResultTypeAndPrecision)
 TEST_F(TypeTrackingTest, TextureCubeResultTypeAndPrecision)
 {
     // ESSL spec section 4.5.3: sampler2D and samplerCube are lowp by default
-    // ESSL spec section 8: For the texture functions, the precision of the return type matches the precision of the sampler type.
+    // ESSL spec section 8: For the texture functions, the precision of the return type matches the
+    // precision of the sampler type.
     const std::string &shaderString =
         "precision mediump float;\n"
         "uniform samplerCube sc;\n"
@@ -304,7 +309,7 @@ TEST_F(TypeTrackingTest, StructConstructorResultNoPrecision)
         "}\n";
     compile(shaderString);
     ASSERT_FALSE(foundErrorInIntermediateTree());
-    ASSERT_TRUE(foundInIntermediateTree("Construct (structure)"));
+    ASSERT_TRUE(foundInIntermediateTree("Construct (structure 'S')"));
 }
 
 TEST_F(TypeTrackingTest, PackResultTypeAndPrecision)
@@ -387,7 +392,7 @@ TEST_F(TypeTrackingTest, BuiltInAbsSignFunctionFloatResultTypeAndPrecision)
         "void main() {\n"
         "   float fval2 = abs(fval1);\n"
         "   float fval3 = sign(fval1);\n"
-        "   gl_FragColor = vec4(fval1, 0.0, 0.0, 1.0); \n"
+        "   gl_FragColor = vec4(fval1, fval2, fval3, 1.0); \n"
         "}\n";
     compile(shaderString);
     ASSERT_FALSE(foundErrorInIntermediateTree());
@@ -406,7 +411,7 @@ TEST_F(TypeTrackingTest, BuiltInAbsSignFunctionIntResultTypeAndPrecision)
         "void main() {\n"
         "   int ival2 = abs(ival1);\n"
         "   int ival3 = sign(ival1);\n"
-        "   my_FragColor = vec4(0.0, 0.0, 0.0, 1.0); \n"
+        "   my_FragColor = vec4(ival2, ival3, 0, 1); \n"
         "}\n";
     compile(shaderString);
     ASSERT_FALSE(foundErrorInIntermediateTree());
@@ -426,7 +431,7 @@ TEST_F(TypeTrackingTest, BuiltInFloatBitsToIntResultTypeAndPrecision)
         "void main() {\n"
         "   int i = floatBitsToInt(f);\n"
         "   uint u = floatBitsToUint(f);\n"
-        "   my_FragColor = vec4(0.0, 0.0, 0.0, 1.0); \n"
+        "   my_FragColor = vec4(i, int(u), 0, 1); \n"
         "}\n";
     compile(shaderString);
     ASSERT_FALSE(foundErrorInIntermediateTree());
@@ -642,4 +647,215 @@ TEST_F(TypeTrackingTest, BuiltInUsubBorrowPrecision)
     compile(shaderString);
     ASSERT_FALSE(foundErrorInIntermediateTree());
     ASSERT_TRUE(foundInIntermediateTree("usubBorrow (highp 2-component vector of uint)"));
+}
+
+// Test that big struct (s1 > 16 elements) declaration with a variable declaration
+// produces certain output. When the struct is big, the variable itself won't be
+// constant folded during parsing but its arguments are.
+// Current output shows that the constant folding in the parser forms AST that
+// has struct s1 specifying node twice, which is a bug.
+TEST_F(TypeTrackingTest, BigConstStructCompoundDeclaration)
+{
+    const char kShader[]   = R"(#version 300 es
+precision highp float;
+out vec4 o;
+const struct s2 {
+    int i;
+} s22 = s2(8);
+const struct s1 {
+    s2 ss;
+    mat4 m;
+} s11 = s1(s22, mat4(5));
+s1 f(s1 s)
+{
+    return s;
+}
+void main()
+{
+  if (f(s11) == f(s11))
+    o = vec4(1);
+}
+)";
+    const char kExpected[] = R"(0:2: Code block
+0:6:   Declaration
+0:? :     '' (structure 's2' (specifier))
+0:10:   Declaration
+0:10:     initialize first child with second child (const structure 's1' (specifier))
+0:10:       's11' (const structure 's1' (specifier))
+0:10:       Construct (const structure 's1')
+0:10:         Constant union (const structure 's2' (specifier))
+0:10:           8 (const int)
+0:10:         Constant union (const 4X4 matrix of float)
+0:10:           5.0 (const float)
+0:10:           0.0 (const float)
+0:10:           0.0 (const float)
+0:10:           0.0 (const float)
+0:10:           0.0 (const float)
+0:10:           5.0 (const float)
+0:10:           0.0 (const float)
+0:10:           0.0 (const float)
+0:10:           0.0 (const float)
+0:10:           0.0 (const float)
+0:10:           5.0 (const float)
+0:10:           0.0 (const float)
+0:10:           0.0 (const float)
+0:10:           0.0 (const float)
+0:10:           0.0 (const float)
+0:10:           5.0 (const float)
+0:3:   Declaration
+0:3:     'o' (out highp 4-component vector of float)
+0:11:   Function Definition:
+0:11:     Function Prototype: 'f' (structure 's1')
+0:11:       parameter: 's' (in structure 's1')
+0:12:     Code block
+0:13:       Branch: Return with expression
+0:13:           's' (in structure 's1')
+0:15:   Function Definition:
+0:15:     Function Prototype: 'main' (void)
+0:16:     Code block
+0:17:       If test
+0:17:         Condition
+0:17:           Compare Equal (bool)
+0:17:             Call a function: 'f' (structure 's1')
+0:17:               's11' (const structure 's1' (specifier))
+0:17:             Call a function: 'f' (structure 's1')
+0:17:               's11' (const structure 's1' (specifier))
+0:17:         true case
+0:18:           Code block
+0:18:             move second child to first child (highp 4-component vector of float)
+0:18:               'o' (out highp 4-component vector of float)
+0:18:               Constant union (const highp 4-component vector of float)
+0:18:                 1.0 (const float)
+0:18:                 1.0 (const float)
+0:18:                 1.0 (const float)
+0:18:                 1.0 (const float)
+)";
+    compile(kShader);
+    EXPECT_EQ(kExpected, getOutput());
+}
+TEST_F(TypeTrackingTest, BigStructCompoundDeclaration)
+{
+    const char kShader[]   = R"(#version 300 es
+precision highp float;
+out vec4 o;
+void main()
+{
+    struct s2 {
+        int i;
+    } s22 = s2(8);
+    struct s1 {
+        s2 ss;
+        mat4 m;
+    } s11 = s1(s22, mat4(5));
+    s11 = s11;
+    if (s11 == s11)
+       o = vec4(1);
+}
+)";
+    const char kExpected[] = R"(0:2: Code block
+0:3:   Declaration
+0:3:     'o' (out highp 4-component vector of float)
+0:4:   Function Definition:
+0:4:     Function Prototype: 'main' (void)
+0:5:     Code block
+0:8:       Declaration
+0:8:         initialize first child with second child (structure 's2' (specifier))
+0:8:           's22' (structure 's2' (specifier))
+0:8:           Constant union (const structure 's2')
+0:8:             8 (const int)
+0:12:       Declaration
+0:12:         initialize first child with second child (structure 's1' (specifier))
+0:12:           's11' (structure 's1' (specifier))
+0:12:           Construct (structure 's1')
+0:12:             's22' (structure 's2' (specifier))
+0:12:             Constant union (const 4X4 matrix of float)
+0:12:               5.0 (const float)
+0:12:               0.0 (const float)
+0:12:               0.0 (const float)
+0:12:               0.0 (const float)
+0:12:               0.0 (const float)
+0:12:               5.0 (const float)
+0:12:               0.0 (const float)
+0:12:               0.0 (const float)
+0:12:               0.0 (const float)
+0:12:               0.0 (const float)
+0:12:               5.0 (const float)
+0:12:               0.0 (const float)
+0:12:               0.0 (const float)
+0:12:               0.0 (const float)
+0:12:               0.0 (const float)
+0:12:               5.0 (const float)
+0:13:       move second child to first child (structure 's1' (specifier))
+0:13:         's11' (structure 's1' (specifier))
+0:13:         's11' (structure 's1' (specifier))
+0:14:       If test
+0:14:         Condition
+0:14:           Compare Equal (bool)
+0:14:             's11' (structure 's1' (specifier))
+0:14:             's11' (structure 's1' (specifier))
+0:14:         true case
+0:15:           Code block
+0:15:             move second child to first child (highp 4-component vector of float)
+0:15:               'o' (out highp 4-component vector of float)
+0:15:               Constant union (const highp 4-component vector of float)
+0:15:                 1.0 (const float)
+0:15:                 1.0 (const float)
+0:15:                 1.0 (const float)
+0:15:                 1.0 (const float)
+)";
+    compile(kShader);
+    EXPECT_EQ(kExpected, getOutput());
+}
+
+// Test showing that prototypes get the function definition variable names.
+// Tests that when unnamed variables must be initialized, the variables get internal names.
+TEST_F(TypeTrackingTest, VariableNamesInPrototypesUnnamedOut)
+{
+    const char kShader[]   = R"(#version 300 es
+precision highp float;
+out vec4 o;
+void f(out float, out float);
+void main()
+{
+    o = vec4(0.5);
+    f(o.r, o.g);    
+}
+void f(out float r, out float)
+{
+    r = 1.0;
+}
+)";
+    const char kExpected[] = R"(0:2: Code block
+0:3:   Declaration
+0:3:     'o' (out highp 4-component vector of float)
+0:4:   Function Prototype: 'f' (void)
+0:4:     parameter: 'r' (out highp float)
+0:4:     parameter: '' (out highp float)
+0:5:   Function Definition:
+0:5:     Function Prototype: 'main' (void)
+0:6:     Code block
+0:7:       move second child to first child (highp 4-component vector of float)
+0:7:         'o' (out highp 4-component vector of float)
+0:7:         Constant union (const highp 4-component vector of float)
+0:7:           0.5 (const float)
+0:7:           0.5 (const float)
+0:7:           0.5 (const float)
+0:7:           0.5 (const float)
+0:8:       Call a function: 'f' (void)
+0:8:         vector swizzle (x) (highp float)
+0:8:           'o' (out highp 4-component vector of float)
+0:8:         vector swizzle (y) (highp float)
+0:8:           'o' (out highp 4-component vector of float)
+0:10:   Function Definition:
+0:10:     Function Prototype: 'f' (void)
+0:10:       parameter: 'r' (out highp float)
+0:10:       parameter: '' (out highp float)
+0:11:     Code block
+0:12:       move second child to first child (highp float)
+0:12:         'r' (out highp float)
+0:12:         Constant union (const highp float)
+0:12:           1.0 (const float)
+)";
+    compile(kShader);
+    EXPECT_EQ(kExpected, getOutput());
 }

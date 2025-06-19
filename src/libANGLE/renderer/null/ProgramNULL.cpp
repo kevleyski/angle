@@ -13,180 +13,70 @@
 
 namespace rx
 {
-
-ProgramNULL::ProgramNULL(const gl::ProgramState &state) : ProgramImpl(state)
+namespace
 {
+class LinkTaskNULL : public LinkTask
+{
+  public:
+    LinkTaskNULL(const gl::ProgramState *state) : mState(state) {}
+    ~LinkTaskNULL() override = default;
+    void link(const gl::ProgramLinkedResources &resources,
+              const gl::ProgramMergedVaryings &mergedVaryings,
+              std::vector<std::shared_ptr<LinkSubTask>> *linkSubTasksOut,
+              std::vector<std::shared_ptr<LinkSubTask>> *postLinkSubTasksOut) override
+    {
+        ASSERT(linkSubTasksOut && linkSubTasksOut->empty());
+        ASSERT(postLinkSubTasksOut && postLinkSubTasksOut->empty());
+
+        const gl::SharedCompiledShaderState &fragmentShader =
+            mState->getAttachedShader(gl::ShaderType::Fragment);
+        if (fragmentShader != nullptr)
+        {
+            resources.pixelLocalStorageLinker.link(fragmentShader->pixelLocalStorageFormats);
+        }
+
+        return;
+    }
+    angle::Result getResult(const gl::Context *context, gl::InfoLog &infoLog) override
+    {
+        return angle::Result::Continue;
+    }
+
+  private:
+    const gl::ProgramState *mState;
+};
+}  // anonymous namespace
+
+ProgramNULL::ProgramNULL(const gl::ProgramState &state) : ProgramImpl(state) {}
+
+ProgramNULL::~ProgramNULL() {}
+
+angle::Result ProgramNULL::load(const gl::Context *context,
+                                gl::BinaryInputStream *stream,
+                                std::shared_ptr<LinkTask> *loadTaskOut,
+                                egl::CacheGetResult *resultOut)
+{
+    *loadTaskOut = {};
+    *resultOut   = egl::CacheGetResult::Success;
+    return angle::Result::Continue;
 }
 
-ProgramNULL::~ProgramNULL()
+void ProgramNULL::save(const gl::Context *context, gl::BinaryOutputStream *stream) {}
+
+void ProgramNULL::setBinaryRetrievableHint(bool retrievable) {}
+
+void ProgramNULL::setSeparable(bool separable) {}
+
+angle::Result ProgramNULL::link(const gl::Context *contextImpl,
+                                std::shared_ptr<LinkTask> *linkTaskOut)
 {
+    *linkTaskOut = std::shared_ptr<LinkTask>(new LinkTaskNULL(&mState));
+    return angle::Result::Continue;
 }
 
-gl::LinkResult ProgramNULL::load(const gl::Context *contextImpl,
-                                 gl::InfoLog &infoLog,
-                                 gl::BinaryInputStream *stream)
-{
-    return true;
-}
-
-void ProgramNULL::save(const gl::Context *context, gl::BinaryOutputStream *stream)
-{
-}
-
-void ProgramNULL::setBinaryRetrievableHint(bool retrievable)
-{
-}
-
-void ProgramNULL::setSeparable(bool separable)
-{
-}
-
-gl::LinkResult ProgramNULL::link(const gl::Context *contextImpl,
-                                 const gl::VaryingPacking &packing,
-                                 gl::InfoLog &infoLog)
-{
-    return true;
-}
-
-GLboolean ProgramNULL::validate(const gl::Caps &caps, gl::InfoLog *infoLog)
+GLboolean ProgramNULL::validate(const gl::Caps &caps)
 {
     return GL_TRUE;
-}
-
-void ProgramNULL::setUniform1fv(GLint location, GLsizei count, const GLfloat *v)
-{
-}
-
-void ProgramNULL::setUniform2fv(GLint location, GLsizei count, const GLfloat *v)
-{
-}
-
-void ProgramNULL::setUniform3fv(GLint location, GLsizei count, const GLfloat *v)
-{
-}
-
-void ProgramNULL::setUniform4fv(GLint location, GLsizei count, const GLfloat *v)
-{
-}
-
-void ProgramNULL::setUniform1iv(GLint location, GLsizei count, const GLint *v)
-{
-}
-
-void ProgramNULL::setUniform2iv(GLint location, GLsizei count, const GLint *v)
-{
-}
-
-void ProgramNULL::setUniform3iv(GLint location, GLsizei count, const GLint *v)
-{
-}
-
-void ProgramNULL::setUniform4iv(GLint location, GLsizei count, const GLint *v)
-{
-}
-
-void ProgramNULL::setUniform1uiv(GLint location, GLsizei count, const GLuint *v)
-{
-}
-
-void ProgramNULL::setUniform2uiv(GLint location, GLsizei count, const GLuint *v)
-{
-}
-
-void ProgramNULL::setUniform3uiv(GLint location, GLsizei count, const GLuint *v)
-{
-}
-
-void ProgramNULL::setUniform4uiv(GLint location, GLsizei count, const GLuint *v)
-{
-}
-
-void ProgramNULL::setUniformMatrix2fv(GLint location,
-                                      GLsizei count,
-                                      GLboolean transpose,
-                                      const GLfloat *value)
-{
-}
-
-void ProgramNULL::setUniformMatrix3fv(GLint location,
-                                      GLsizei count,
-                                      GLboolean transpose,
-                                      const GLfloat *value)
-{
-}
-
-void ProgramNULL::setUniformMatrix4fv(GLint location,
-                                      GLsizei count,
-                                      GLboolean transpose,
-                                      const GLfloat *value)
-{
-}
-
-void ProgramNULL::setUniformMatrix2x3fv(GLint location,
-                                        GLsizei count,
-                                        GLboolean transpose,
-                                        const GLfloat *value)
-{
-}
-
-void ProgramNULL::setUniformMatrix3x2fv(GLint location,
-                                        GLsizei count,
-                                        GLboolean transpose,
-                                        const GLfloat *value)
-{
-}
-
-void ProgramNULL::setUniformMatrix2x4fv(GLint location,
-                                        GLsizei count,
-                                        GLboolean transpose,
-                                        const GLfloat *value)
-{
-}
-
-void ProgramNULL::setUniformMatrix4x2fv(GLint location,
-                                        GLsizei count,
-                                        GLboolean transpose,
-                                        const GLfloat *value)
-{
-}
-
-void ProgramNULL::setUniformMatrix3x4fv(GLint location,
-                                        GLsizei count,
-                                        GLboolean transpose,
-                                        const GLfloat *value)
-{
-}
-
-void ProgramNULL::setUniformMatrix4x3fv(GLint location,
-                                        GLsizei count,
-                                        GLboolean transpose,
-                                        const GLfloat *value)
-{
-}
-
-void ProgramNULL::setUniformBlockBinding(GLuint uniformBlockIndex, GLuint uniformBlockBinding)
-{
-}
-
-bool ProgramNULL::getUniformBlockSize(const std::string &blockName, size_t *sizeOut) const
-{
-    // TODO(geofflang): Compute reasonable sizes?
-    *sizeOut = 0;
-    return true;
-}
-
-bool ProgramNULL::getUniformBlockMemberInfo(const std::string &memberUniformName,
-                                            sh::BlockMemberInfo *memberInfoOut) const
-{
-    // TODO(geofflang): Compute reasonable values?
-    return true;
-}
-
-void ProgramNULL::setPathFragmentInputGen(const std::string &inputName,
-                                          GLenum genMode,
-                                          GLint components,
-                                          const GLfloat *coeffs)
-{
 }
 
 }  // namespace rx

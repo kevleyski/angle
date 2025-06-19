@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2002-2010 The ANGLE Project Authors. All rights reserved.
+// Copyright 2002 The ANGLE Project Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
@@ -12,12 +12,29 @@
 
 #include <array>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <ostream>
 #include <vector>
 
-#include "common/angleutils.h"
+#if defined(ANGLE_PLATFORM_ANDROID)
+#    include <android/log.h>
+#endif
+
+#if defined(ANGLE_PLATFORM_APPLE)
+#    include <os/log.h>
+#endif
+
+#if defined(ANGLE_PLATFORM_WINDOWS)
+#    include <windows.h>
+#endif
+
+#include "anglebase/no_destructor.h"
 #include "common/Optional.h"
+#include "common/SimpleMutex.h"
+#include "common/angleutils.h"
+#include "common/entry_points_enum_autogen.h"
+#include "common/system_utils.h"
 
 namespace gl
 {
@@ -27,8 +44,10 @@ namespace
 
 DebugAnnotator *g_debugAnnotator = nullptr;
 
+angle::SimpleMutex *g_debugMutex = nullptr;
+
 constexpr std::array<const char *, LOG_NUM_SEVERITIES> g_logSeverityNames = {
-    {"EVENT", "WARN", "ERR"}};
+    {"EVENT", "INFO", "WARN", "ERR", "FATAL"}};
 
 constexpr const char *LogSeverityName(int severity)
 {
@@ -40,10 +59,13 @@ bool ShouldCreateLogMessage(LogSeverity severity)
 {
 #if defined(ANGLE_TRACE_ENABLED)
     return true;
+#elif defined(ANGLE_ALWAYS_LOG_INFO)
+    return severity == LOG_FATAL || severity == LOG_ERR || severity == LOG_WARN ||
+           severity == LOG_INFO;
 #elif defined(ANGLE_ENABLE_ASSERTS)
-    return severity == LOG_ERR;
+    return severity == LOG_FATAL || severity == LOG_ERR || severity == LOG_WARN;
 #else
-    return false;
+    return severity == LOG_FATAL || severity == LOG_ERR;
 #endif
 }
 
@@ -61,15 +83,27 @@ bool ShouldCreatePlatformLogMessage(LogSeverity severity)
 #endif
 }
 
+// This is never instantiated, it's just used for EAT_STREAM_PARAMETERS to an object of the correct
+// type on the LHS of the unused part of the ternary operator.
+std::ostream *gSwallowStream;
 }  // namespace priv
 
-bool DebugAnnotationsActive()
+bool DebugAnnotationsActive(const gl::Context *context)
 {
-#if defined(ANGLE_ENABLE_DEBUG_ANNOTATIONS)
-    return g_debugAnnotator != nullptr && g_debugAnnotator->getStatus();
+#if defined(ANGLE_ENABLE_DEBUG_ANNOTATIONS) || defined(ANGLE_ENABLE_DEBUG_TRACE)
+    return g_debugAnnotator != nullptr && g_debugAnnotator->getStatus(context);
 #else
     return false;
 #endif
+}
+
+bool ShouldBeginScopedEvent(const gl::Context *context)
+{
+#if defined(ANGLE_ENABLE_ANNOTATOR_RUN_TIME_CHECKS)
+    return DebugAnnotationsActive(context);
+#else
+    return true;
+#endif  // defined(ANGLE_ENABLE_ANNOTATOR_RUN_TIME_CHECKS)
 }
 
 bool DebugAnnotationsInitialized()
@@ -89,50 +123,94 @@ void UninitializeDebugAnnotations()
     g_debugAnnotator = nullptr;
 }
 
-ScopedPerfEventHelper::ScopedPerfEventHelper(const char *format, ...)
+void InitializeDebugMutexIfNeeded()
 {
-#if !defined(ANGLE_ENABLE_DEBUG_TRACE)
-    if (!DebugAnnotationsActive())
+    if (g_debugMutex == nullptr)
     {
-        return;
+        g_debugMutex = new angle::SimpleMutex();
     }
-#endif  // !ANGLE_ENABLE_DEBUG_TRACE
-
-    va_list vararg;
-    va_start(vararg, format);
-    std::vector<char> buffer(512);
-    size_t len = FormatStringIntoVector(format, vararg, buffer);
-    ANGLE_LOG(EVENT) << std::string(&buffer[0], len);
-    va_end(vararg);
 }
+
+angle::SimpleMutex &GetDebugMutex()
+{
+    ASSERT(g_debugMutex);
+    return *g_debugMutex;
+}
+
+ScopedPerfEventHelper::ScopedPerfEventHelper(gl::Context *context, angle::EntryPoint entryPoint)
+    : mContext(context), mEntryPoint(entryPoint), mFunctionName(nullptr), mCalledBeginEvent(false)
+{}
 
 ScopedPerfEventHelper::~ScopedPerfEventHelper()
 {
-    if (DebugAnnotationsActive())
+    // EGL_Initialize() and EGL_Terminate() can change g_debugAnnotator.  Must check the value of
+    // g_debugAnnotator and whether ScopedPerfEventHelper::begin() initiated a begine that must be
+    // ended now.
+    if (DebugAnnotationsInitialized() && mCalledBeginEvent)
     {
-        g_debugAnnotator->endEvent();
+        g_debugAnnotator->endEvent(mContext, mFunctionName, mEntryPoint);
     }
 }
 
-LogMessage::LogMessage(const char *function, int line, LogSeverity severity)
-    : mFunction(function), mLine(line), mSeverity(severity)
+void ScopedPerfEventHelper::begin(const char *format, ...)
 {
-    // EVENT() does not require additional function(line) info.
-    if (mSeverity != LOG_EVENT)
+    mFunctionName = GetEntryPointName(mEntryPoint);
+
+    va_list vararg;
+    va_start(vararg, format);
+
+    std::vector<char> buffer;
+    size_t len = FormatStringIntoVector(format, vararg, buffer);
+    va_end(vararg);
+
+    ANGLE_LOG(EVENT) << std::string(&buffer[0], len);
+    if (DebugAnnotationsInitialized())
     {
-        mStream << mFunction << "(" << mLine << "): ";
+        mCalledBeginEvent = true;
+        g_debugAnnotator->beginEvent(mContext, mEntryPoint, mFunctionName, buffer.data());
+    }
+}
+
+LogMessage::LogMessage(const char *file, const char *function, int line, LogSeverity severity)
+    : mFile(file), mFunction(function), mLine(line), mSeverity(severity)
+{
+    // INFO() and EVENT() do not require additional function(line) info.
+    if (mSeverity > LOG_INFO)
+    {
+        const char *slash = std::max(strrchr(mFile, '/'), strrchr(mFile, '\\'));
+        mStream << (slash ? (slash + 1) : mFile) << ":" << mLine << " (" << mFunction << "): ";
     }
 }
 
 LogMessage::~LogMessage()
 {
-    if (DebugAnnotationsInitialized() && (mSeverity == LOG_ERR || mSeverity == LOG_WARN))
     {
-        g_debugAnnotator->logMessage(*this);
+        std::unique_lock<angle::SimpleMutex> lock;
+        if (g_debugMutex != nullptr)
+        {
+            lock = std::unique_lock<angle::SimpleMutex>(*g_debugMutex);
+        }
+
+        if (DebugAnnotationsInitialized() && (mSeverity > LOG_INFO))
+        {
+            g_debugAnnotator->logMessage(*this);
+        }
+        else
+        {
+            Trace(getSeverity(), getMessage().c_str());
+        }
     }
-    else
+
+    if (mSeverity == LOG_FATAL)
     {
-        Trace(getSeverity(), getMessage().c_str());
+        if (angle::IsDebuggerAttached())
+        {
+            angle::BreakDebugger();
+        }
+        else
+        {
+            ANGLE_CRASH();
+        }
     }
 }
 
@@ -145,49 +223,111 @@ void Trace(LogSeverity severity, const char *message)
 
     std::string str(message);
 
-    if (DebugAnnotationsActive())
+    if (DebugAnnotationsActive(/*context=*/nullptr))
     {
-        std::wstring formattedWideMessage(str.begin(), str.end());
 
         switch (severity)
         {
             case LOG_EVENT:
-                g_debugAnnotator->beginEvent(formattedWideMessage.c_str());
+                // Debugging logging done in ScopedPerfEventHelper
                 break;
             default:
-                g_debugAnnotator->setMarker(formattedWideMessage.c_str());
+                g_debugAnnotator->setMarker(/*context=*/nullptr, message);
                 break;
         }
     }
 
-    if (severity == LOG_ERR)
+    if (severity == LOG_FATAL || severity == LOG_ERR || severity == LOG_WARN ||
+#if defined(ANGLE_ENABLE_TRACE_ANDROID_LOGCAT) || defined(ANGLE_ENABLE_TRACE_EVENTS)
+        severity == LOG_EVENT ||
+#endif
+        severity == LOG_INFO)
     {
+#if defined(ANGLE_PLATFORM_ANDROID)
+        android_LogPriority android_priority = ANDROID_LOG_ERROR;
+        switch (severity)
+        {
+            case LOG_INFO:
+            case LOG_EVENT:
+                android_priority = ANDROID_LOG_INFO;
+                break;
+            case LOG_WARN:
+                android_priority = ANDROID_LOG_WARN;
+                break;
+            case LOG_ERR:
+                android_priority = ANDROID_LOG_ERROR;
+                break;
+            case LOG_FATAL:
+                android_priority = ANDROID_LOG_FATAL;
+                break;
+            default:
+                UNREACHABLE();
+        }
+        __android_log_print(android_priority, "ANGLE", "%s: %s\n", LogSeverityName(severity),
+                            str.c_str());
+        // Note: we also log to stdout/stderr below.
+#endif
+
+#if defined(ANGLE_PLATFORM_APPLE)
+        if (__builtin_available(macOS 10.12, iOS 10.0, *))
+        {
+            os_log_type_t apple_log_type = OS_LOG_TYPE_DEFAULT;
+            switch (severity)
+            {
+                case LOG_INFO:
+                case LOG_EVENT:
+                    apple_log_type = OS_LOG_TYPE_INFO;
+                    break;
+                case LOG_WARN:
+                    apple_log_type = OS_LOG_TYPE_DEFAULT;
+                    break;
+                case LOG_ERR:
+                    apple_log_type = OS_LOG_TYPE_ERROR;
+                    break;
+                case LOG_FATAL:
+                    // OS_LOG_TYPE_FAULT is too severe - grabs the entire process tree.
+                    apple_log_type = OS_LOG_TYPE_ERROR;
+                    break;
+                default:
+                    UNREACHABLE();
+            }
+            os_log_with_type(OS_LOG_DEFAULT, apple_log_type, "ANGLE: %s: %s\n",
+                             LogSeverityName(severity), str.c_str());
+        }
+#else
         // Note: we use fprintf because <iostream> includes static initializers.
-        fprintf(stderr, "%s: %s\n", LogSeverityName(severity), str.c_str());
+        fprintf((severity >= LOG_WARN) ? stderr : stdout, "%s: %s\n", LogSeverityName(severity),
+                str.c_str());
+#endif
     }
 
 #if defined(ANGLE_PLATFORM_WINDOWS) && \
     (defined(ANGLE_ENABLE_DEBUG_TRACE_TO_DEBUGGER) || !defined(NDEBUG))
-#if !defined(ANGLE_ENABLE_DEBUG_TRACE_TO_DEBUGGER)
-    if (severity == LOG_ERR)
-#endif  // !defined(ANGLE_ENABLE_DEBUG_TRACE_TO_DEBUGGER)
+#    if !defined(ANGLE_ENABLE_DEBUG_TRACE_TO_DEBUGGER)
+    if (severity >= LOG_ERR)
+#    endif  // !defined(ANGLE_ENABLE_DEBUG_TRACE_TO_DEBUGGER)
     {
         OutputDebugStringA(str.c_str());
+        OutputDebugStringA("\n");
     }
 #endif
 
 #if defined(ANGLE_ENABLE_DEBUG_TRACE)
-#if defined(NDEBUG)
-    if (severity == LOG_EVENT || severity == LOG_WARN)
+#    if defined(NDEBUG)
+    if (severity == LOG_EVENT || severity == LOG_WARN || severity == LOG_INFO)
     {
         return;
     }
-#endif  // defined(NDEBUG)
-    static std::ofstream file(TRACE_OUTPUT_FILE, std::ofstream::app);
-    if (file)
+#    endif  // defined(NDEBUG)
+    static angle::base::NoDestructor<std::ofstream> file(TRACE_OUTPUT_FILE, std::ofstream::app);
+    if (file->good())
     {
-        file << LogSeverityName(severity) << ": " << str << std::endl;
-        file.flush();
+        if (severity > LOG_EVENT)
+        {
+            *file << LogSeverityName(severity) << ": ";
+        }
+        *file << str << "\n";
+        file->flush();
     }
 #endif  // defined(ANGLE_ENABLE_DEBUG_TRACE)
 }
@@ -203,18 +343,15 @@ std::string LogMessage::getMessage() const
 }
 
 #if defined(ANGLE_PLATFORM_WINDOWS)
-std::ostream &operator<<(std::ostream &os, const FmtHR &fmt)
+priv::FmtHexHelper<HRESULT, char> FmtHR(HRESULT value)
 {
-    os << "HRESULT: ";
-    return FmtHexInt(os, fmt.mHR);
+    return priv::FmtHexHelper<HRESULT, char>("HRESULT: ", value);
 }
 
-std::ostream &operator<<(std::ostream &os, const FmtErr &fmt)
+priv::FmtHexHelper<DWORD, char> FmtErr(DWORD value)
 {
-    os << "error: ";
-    return FmtHexInt(os, fmt.mErr);
+    return priv::FmtHexHelper<DWORD, char>("error: ", value);
 }
-
 #endif  // defined(ANGLE_PLATFORM_WINDOWS)
 
 }  // namespace gl

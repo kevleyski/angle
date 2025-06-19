@@ -1,680 +1,765 @@
 //
-// Copyright (c) 2013 The ANGLE Project Authors. All rights reserved.
+// Copyright 2018 The ANGLE Project Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
-
-// validationES2.h: Validation functions for OpenGL ES 2.0 entry point parameters
+// validationES2.h:
+//  Inlined validation functions for OpenGL ES 2.0 entry points.
 
 #ifndef LIBANGLE_VALIDATION_ES2_H_
 #define LIBANGLE_VALIDATION_ES2_H_
 
-#include <GLES2/gl2.h>
-#include <GLES2/gl2ext.h>
+#include "libANGLE/ErrorStrings.h"
+#include "libANGLE/validationES.h"
+#include "libANGLE/validationES2_autogen.h"
 
 namespace gl
 {
-class Context;
-class ValidationContext;
 
-bool ValidateES2TexStorageParameters(Context *context,
-                                     GLenum target,
-                                     GLsizei levels,
-                                     GLenum internalformat,
-                                     GLsizei width,
-                                     GLsizei height);
+void RecordVersionErrorES20(const Context *context, angle::EntryPoint entryPoint);
 
-bool ValidateDiscardFramebufferEXT(Context *context,
-                                   GLenum target,
-                                   GLsizei numAttachments,
-                                   const GLenum *attachments);
+ANGLE_INLINE bool ValidateDrawArrays(const Context *context,
+                                     angle::EntryPoint entryPoint,
+                                     PrimitiveMode mode,
+                                     GLint first,
+                                     GLsizei count)
+{
+    return ValidateDrawArraysCommon(context, entryPoint, mode, first, count, 1);
+}
 
-bool ValidateDrawBuffersEXT(ValidationContext *context, GLsizei n, const GLenum *bufs);
+ANGLE_INLINE bool ValidateUniform1f(const Context *context,
+                                    angle::EntryPoint entryPoint,
+                                    UniformLocation location,
+                                    GLfloat x)
+{
+    return ValidateUniform(context, entryPoint, GL_FLOAT, location, 1);
+}
 
-bool ValidateBindVertexArrayOES(Context *context, GLuint array);
-bool ValidateDeleteVertexArraysOES(Context *context, GLsizei n);
-bool ValidateGenVertexArraysOES(Context *context, GLsizei n);
-bool ValidateIsVertexArrayOES(Context *context);
+ANGLE_INLINE bool ValidateUniform1fv(const Context *context,
+                                     angle::EntryPoint entryPoint,
+                                     UniformLocation location,
+                                     GLsizei count,
+                                     const GLfloat *v)
+{
+    if (!ValidateUniformValuePointer(context, entryPoint, v))
+    {
+        // Error already generated.
+        return false;
+    }
 
-bool ValidateProgramBinaryOES(Context *context,
-                              GLuint program,
-                              GLenum binaryFormat,
-                              const void *binary,
-                              GLint length);
-bool ValidateGetProgramBinaryOES(Context *context,
-                                 GLuint program,
-                                 GLsizei bufSize,
-                                 GLsizei *length,
-                                 GLenum *binaryFormat,
-                                 void *binary);
+    return ValidateUniform(context, entryPoint, GL_FLOAT, location, count);
+}
 
-// GL_KHR_debug
-bool ValidateDebugMessageControlKHR(Context *context,
-                                    GLenum source,
-                                    GLenum type,
-                                    GLenum severity,
-                                    GLsizei count,
-                                    const GLuint *ids,
-                                    GLboolean enabled);
-bool ValidateDebugMessageInsertKHR(Context *context,
-                                   GLenum source,
-                                   GLenum type,
-                                   GLuint id,
-                                   GLenum severity,
-                                   GLsizei length,
-                                   const GLchar *buf);
-bool ValidateDebugMessageCallbackKHR(Context *context,
-                                     GLDEBUGPROCKHR callback,
-                                     const void *userParam);
-bool ValidateGetDebugMessageLogKHR(Context *context,
-                                   GLuint count,
-                                   GLsizei bufSize,
-                                   GLenum *sources,
-                                   GLenum *types,
-                                   GLuint *ids,
-                                   GLenum *severities,
-                                   GLsizei *lengths,
-                                   GLchar *messageLog);
-bool ValidatePushDebugGroupKHR(Context *context,
-                               GLenum source,
-                               GLuint id,
-                               GLsizei length,
-                               const GLchar *message);
-bool ValidatePopDebugGroupKHR(Context *context);
-bool ValidateObjectLabelKHR(Context *context,
-                            GLenum identifier,
-                            GLuint name,
-                            GLsizei length,
-                            const GLchar *label);
-bool ValidateGetObjectLabelKHR(Context *context,
-                               GLenum identifier,
-                               GLuint name,
-                               GLsizei bufSize,
-                               GLsizei *length,
-                               GLchar *label);
-bool ValidateObjectPtrLabelKHR(Context *context,
-                               const void *ptr,
-                               GLsizei length,
-                               const GLchar *label);
-bool ValidateGetObjectPtrLabelKHR(Context *context,
-                                  const void *ptr,
-                                  GLsizei bufSize,
-                                  GLsizei *length,
-                                  GLchar *label);
-bool ValidateGetPointervKHR(Context *context, GLenum pname, void **params);
-bool ValidateBlitFramebufferANGLE(Context *context,
-                                  GLint srcX0,
-                                  GLint srcY0,
-                                  GLint srcX1,
-                                  GLint srcY1,
-                                  GLint dstX0,
-                                  GLint dstY0,
-                                  GLint dstX1,
-                                  GLint dstY1,
-                                  GLbitfield mask,
-                                  GLenum filter);
+ANGLE_INLINE bool ValidateUniform1i(const Context *context,
+                                    angle::EntryPoint entryPoint,
+                                    UniformLocation location,
+                                    GLint x)
+{
+    return ValidateUniform1iv(context, entryPoint, location, 1, &x);
+}
 
-bool ValidateClear(ValidationContext *context, GLbitfield mask);
-bool ValidateTexImage2D(Context *context,
-                        GLenum target,
-                        GLint level,
-                        GLint internalformat,
-                        GLsizei width,
-                        GLsizei height,
-                        GLint border,
-                        GLenum format,
-                        GLenum type,
-                        const void *pixels);
-bool ValidateTexImage2DRobust(Context *context,
-                              GLenum target,
-                              GLint level,
-                              GLint internalformat,
-                              GLsizei width,
-                              GLsizei height,
-                              GLint border,
-                              GLenum format,
-                              GLenum type,
-                              GLsizei bufSize,
-                              const void *pixels);
-bool ValidateTexSubImage2D(Context *context,
-                           GLenum target,
-                           GLint level,
-                           GLint xoffset,
-                           GLint yoffset,
-                           GLsizei width,
-                           GLsizei height,
-                           GLenum format,
-                           GLenum type,
-                           const void *pixels);
-bool ValidateTexSubImage2DRobustANGLE(Context *context,
-                                      GLenum target,
-                                      GLint level,
-                                      GLint xoffset,
-                                      GLint yoffset,
-                                      GLsizei width,
-                                      GLsizei height,
-                                      GLenum format,
-                                      GLenum type,
-                                      GLsizei bufSize,
-                                      const void *pixels);
-bool ValidateCompressedTexImage2D(Context *context,
-                                  GLenum target,
-                                  GLint level,
-                                  GLenum internalformat,
-                                  GLsizei width,
-                                  GLsizei height,
-                                  GLint border,
-                                  GLsizei imageSize,
-                                  const void *data);
-bool ValidateCompressedTexSubImage2D(Context *context,
-                                     GLenum target,
-                                     GLint level,
-                                     GLint xoffset,
-                                     GLint yoffset,
+ANGLE_INLINE bool ValidateUniform2f(const Context *context,
+                                    angle::EntryPoint entryPoint,
+                                    UniformLocation location,
+                                    GLfloat x,
+                                    GLfloat y)
+{
+    return ValidateUniform(context, entryPoint, GL_FLOAT_VEC2, location, 1);
+}
+
+ANGLE_INLINE bool ValidateUniform2fv(const Context *context,
+                                     angle::EntryPoint entryPoint,
+                                     UniformLocation location,
+                                     GLsizei count,
+                                     const GLfloat *v)
+{
+    if (!ValidateUniformValuePointer(context, entryPoint, v))
+    {
+        // Error already generated.
+        return false;
+    }
+
+    return ValidateUniform(context, entryPoint, GL_FLOAT_VEC2, location, count);
+}
+
+ANGLE_INLINE bool ValidateUniform2i(const Context *context,
+                                    angle::EntryPoint entryPoint,
+                                    UniformLocation location,
+                                    GLint x,
+                                    GLint y)
+{
+    return ValidateUniform(context, entryPoint, GL_INT_VEC2, location, 1);
+}
+
+ANGLE_INLINE bool ValidateUniform2iv(const Context *context,
+                                     angle::EntryPoint entryPoint,
+                                     UniformLocation location,
+                                     GLsizei count,
+                                     const GLint *v)
+{
+    if (!ValidateUniformValuePointer(context, entryPoint, v))
+    {
+        // Error already generated.
+        return false;
+    }
+
+    return ValidateUniform(context, entryPoint, GL_INT_VEC2, location, count);
+}
+
+ANGLE_INLINE bool ValidateUniform3f(const Context *context,
+                                    angle::EntryPoint entryPoint,
+                                    UniformLocation location,
+                                    GLfloat x,
+                                    GLfloat y,
+                                    GLfloat z)
+{
+    return ValidateUniform(context, entryPoint, GL_FLOAT_VEC3, location, 1);
+}
+
+ANGLE_INLINE bool ValidateUniform3fv(const Context *context,
+                                     angle::EntryPoint entryPoint,
+                                     UniformLocation location,
+                                     GLsizei count,
+                                     const GLfloat *v)
+{
+    if (!ValidateUniformValuePointer(context, entryPoint, v))
+    {
+        // Error already generated.
+        return false;
+    }
+
+    return ValidateUniform(context, entryPoint, GL_FLOAT_VEC3, location, count);
+}
+
+ANGLE_INLINE bool ValidateUniform3i(const Context *context,
+                                    angle::EntryPoint entryPoint,
+                                    UniformLocation location,
+                                    GLint x,
+                                    GLint y,
+                                    GLint z)
+{
+    return ValidateUniform(context, entryPoint, GL_INT_VEC3, location, 1);
+}
+
+ANGLE_INLINE bool ValidateUniform3iv(const Context *context,
+                                     angle::EntryPoint entryPoint,
+                                     UniformLocation location,
+                                     GLsizei count,
+                                     const GLint *v)
+{
+    if (!ValidateUniformValuePointer(context, entryPoint, v))
+    {
+        // Error already generated.
+        return false;
+    }
+
+    return ValidateUniform(context, entryPoint, GL_INT_VEC3, location, count);
+}
+
+ANGLE_INLINE bool ValidateUniform4f(const Context *context,
+                                    angle::EntryPoint entryPoint,
+                                    UniformLocation location,
+                                    GLfloat x,
+                                    GLfloat y,
+                                    GLfloat z,
+                                    GLfloat w)
+{
+    return ValidateUniform(context, entryPoint, GL_FLOAT_VEC4, location, 1);
+}
+
+ANGLE_INLINE bool ValidateUniform4fv(const Context *context,
+                                     angle::EntryPoint entryPoint,
+                                     UniformLocation location,
+                                     GLsizei count,
+                                     const GLfloat *v)
+{
+    if (!ValidateUniformValuePointer(context, entryPoint, v))
+    {
+        // Error already generated.
+        return false;
+    }
+
+    return ValidateUniform(context, entryPoint, GL_FLOAT_VEC4, location, count);
+}
+
+ANGLE_INLINE bool ValidateUniform4i(const Context *context,
+                                    angle::EntryPoint entryPoint,
+                                    UniformLocation location,
+                                    GLint x,
+                                    GLint y,
+                                    GLint z,
+                                    GLint w)
+{
+    return ValidateUniform(context, entryPoint, GL_INT_VEC4, location, 1);
+}
+
+ANGLE_INLINE bool ValidateUniform4iv(const Context *context,
+                                     angle::EntryPoint entryPoint,
+                                     UniformLocation location,
+                                     GLsizei count,
+                                     const GLint *v)
+{
+    if (!ValidateUniformValuePointer(context, entryPoint, v))
+    {
+        // Error already generated.
+        return false;
+    }
+
+    return ValidateUniform(context, entryPoint, GL_INT_VEC4, location, count);
+}
+
+ANGLE_INLINE bool ValidateUniformMatrix2fv(const Context *context,
+                                           angle::EntryPoint entryPoint,
+                                           UniformLocation location,
+                                           GLsizei count,
+                                           GLboolean transpose,
+                                           const GLfloat *value)
+{
+    return ValidateUniformMatrix(context, entryPoint, GL_FLOAT_MAT2, location, count, transpose);
+}
+
+ANGLE_INLINE bool ValidateUniformMatrix3fv(const Context *context,
+                                           angle::EntryPoint entryPoint,
+                                           UniformLocation location,
+                                           GLsizei count,
+                                           GLboolean transpose,
+                                           const GLfloat *value)
+{
+    return ValidateUniformMatrix(context, entryPoint, GL_FLOAT_MAT3, location, count, transpose);
+}
+
+ANGLE_INLINE bool ValidateUniformMatrix4fv(const Context *context,
+                                           angle::EntryPoint entryPoint,
+                                           UniformLocation location,
+                                           GLsizei count,
+                                           GLboolean transpose,
+                                           const GLfloat *value)
+{
+    return ValidateUniformMatrix(context, entryPoint, GL_FLOAT_MAT4, location, count, transpose);
+}
+
+ANGLE_INLINE bool ValidateVertexAttrib1f(const PrivateState &state,
+                                         ErrorSet *errors,
+                                         angle::EntryPoint entryPoint,
+                                         GLuint index,
+                                         GLfloat x)
+{
+    return ValidateVertexAttribIndex(state, errors, entryPoint, index);
+}
+
+ANGLE_INLINE bool ValidateVertexAttrib1fv(const PrivateState &state,
+                                          ErrorSet *errors,
+                                          angle::EntryPoint entryPoint,
+                                          GLuint index,
+                                          const GLfloat *values)
+{
+    if (values == nullptr)
+    {
+        errors->validationError(entryPoint, GL_INVALID_VALUE, err::kVertexAttributeValueNULL);
+        return false;
+    }
+
+    return ValidateVertexAttribIndex(state, errors, entryPoint, index);
+}
+
+ANGLE_INLINE bool ValidateVertexAttrib2f(const PrivateState &state,
+                                         ErrorSet *errors,
+                                         angle::EntryPoint entryPoint,
+                                         GLuint index,
+                                         GLfloat x,
+                                         GLfloat y)
+{
+    return ValidateVertexAttribIndex(state, errors, entryPoint, index);
+}
+
+ANGLE_INLINE bool ValidateVertexAttrib2fv(const PrivateState &state,
+                                          ErrorSet *errors,
+                                          angle::EntryPoint entryPoint,
+                                          GLuint index,
+                                          const GLfloat *values)
+{
+    if (values == nullptr)
+    {
+        errors->validationError(entryPoint, GL_INVALID_VALUE, err::kVertexAttributeValueNULL);
+        return false;
+    }
+
+    return ValidateVertexAttribIndex(state, errors, entryPoint, index);
+}
+
+ANGLE_INLINE bool ValidateVertexAttrib3f(const PrivateState &state,
+                                         ErrorSet *errors,
+                                         angle::EntryPoint entryPoint,
+                                         GLuint index,
+                                         GLfloat x,
+                                         GLfloat y,
+                                         GLfloat z)
+{
+    return ValidateVertexAttribIndex(state, errors, entryPoint, index);
+}
+
+ANGLE_INLINE bool ValidateVertexAttrib3fv(const PrivateState &state,
+                                          ErrorSet *errors,
+                                          angle::EntryPoint entryPoint,
+                                          GLuint index,
+                                          const GLfloat *values)
+{
+    if (values == nullptr)
+    {
+        errors->validationError(entryPoint, GL_INVALID_VALUE, err::kVertexAttributeValueNULL);
+        return false;
+    }
+
+    return ValidateVertexAttribIndex(state, errors, entryPoint, index);
+}
+
+ANGLE_INLINE bool ValidateVertexAttrib4f(const PrivateState &state,
+                                         ErrorSet *errors,
+                                         angle::EntryPoint entryPoint,
+                                         GLuint index,
+                                         GLfloat x,
+                                         GLfloat y,
+                                         GLfloat z,
+                                         GLfloat w)
+{
+    return ValidateVertexAttribIndex(state, errors, entryPoint, index);
+}
+
+ANGLE_INLINE bool ValidateVertexAttrib4fv(const PrivateState &state,
+                                          ErrorSet *errors,
+                                          angle::EntryPoint entryPoint,
+                                          GLuint index,
+                                          const GLfloat *values)
+{
+    if (values == nullptr)
+    {
+        errors->validationError(entryPoint, GL_INVALID_VALUE, err::kVertexAttributeValueNULL);
+        return false;
+    }
+
+    return ValidateVertexAttribIndex(state, errors, entryPoint, index);
+}
+
+ANGLE_INLINE bool ValidateGenBuffers(const Context *context,
+                                     angle::EntryPoint entryPoint,
+                                     GLint n,
+                                     const BufferID *buffers)
+{
+    return ValidateGenOrDelete(context, entryPoint, n, buffers);
+}
+
+ANGLE_INLINE bool ValidateGenFramebuffers(const Context *context,
+                                          angle::EntryPoint entryPoint,
+                                          GLint n,
+                                          const FramebufferID *framebuffers)
+{
+    return ValidateGenOrDelete(context, entryPoint, n, framebuffers);
+}
+
+ANGLE_INLINE bool ValidateGenRenderbuffers(const Context *context,
+                                           angle::EntryPoint entryPoint,
+                                           GLint n,
+                                           const RenderbufferID *renderbuffers)
+{
+    return ValidateGenOrDelete(context, entryPoint, n, renderbuffers);
+}
+
+ANGLE_INLINE bool ValidateGenTextures(const Context *context,
+                                      angle::EntryPoint entryPoint,
+                                      GLint n,
+                                      const TextureID *textures)
+{
+    return ValidateGenOrDelete(context, entryPoint, n, textures);
+}
+
+ANGLE_INLINE bool ValidateGenerateMipmap(const Context *context,
+                                         angle::EntryPoint entryPoint,
+                                         TextureType target)
+{
+    return ValidateGenerateMipmapBase(context, entryPoint, target);
+}
+
+ANGLE_INLINE bool ValidateGetBufferParameteriv(const Context *context,
+                                               angle::EntryPoint entryPoint,
+                                               BufferBinding target,
+                                               GLenum pname,
+                                               const GLint *params)
+{
+    return ValidateGetBufferParameterBase(context, entryPoint, target, pname, false, nullptr);
+}
+
+ANGLE_INLINE bool ValidateGetRenderbufferParameteriv(const Context *context,
+                                                     angle::EntryPoint entryPoint,
+                                                     GLenum target,
+                                                     GLenum pname,
+                                                     const GLint *params)
+{
+    return ValidateGetRenderbufferParameterivBase(context, entryPoint, target, pname, nullptr);
+}
+
+ANGLE_INLINE bool ValidateGetShaderiv(const Context *context,
+                                      angle::EntryPoint entryPoint,
+                                      ShaderProgramID shader,
+                                      GLenum pname,
+                                      const GLint *params)
+{
+    if (params == nullptr)
+    {
+        ANGLE_VALIDATION_ERROR(GL_INVALID_VALUE, err::kPLSParamsNULL);
+        return false;
+    }
+
+    return ValidateGetShaderivBase(context, entryPoint, shader, pname, nullptr);
+}
+
+ANGLE_INLINE bool ValidateGetTexParameterfv(const Context *context,
+                                            angle::EntryPoint entryPoint,
+                                            TextureType target,
+                                            GLenum pname,
+                                            const GLfloat *params)
+{
+    return ValidateGetTexParameterBase(context, entryPoint, target, pname, nullptr);
+}
+
+ANGLE_INLINE bool ValidateGetTexParameteriv(const Context *context,
+                                            angle::EntryPoint entryPoint,
+                                            TextureType target,
+                                            GLenum pname,
+                                            const GLint *params)
+{
+    return ValidateGetTexParameterBase(context, entryPoint, target, pname, nullptr);
+}
+
+ANGLE_INLINE bool ValidateGetUniformfv(const Context *context,
+                                       angle::EntryPoint entryPoint,
+                                       ShaderProgramID program,
+                                       UniformLocation location,
+                                       const GLfloat *params)
+{
+    return ValidateGetUniformBase(context, entryPoint, program, location);
+}
+
+ANGLE_INLINE bool ValidateGetUniformiv(const Context *context,
+                                       angle::EntryPoint entryPoint,
+                                       ShaderProgramID program,
+                                       UniformLocation location,
+                                       const GLint *params)
+{
+    return ValidateGetUniformBase(context, entryPoint, program, location);
+}
+
+ANGLE_INLINE bool ValidateGetVertexAttribfv(const Context *context,
+                                            angle::EntryPoint entryPoint,
+                                            GLuint index,
+                                            GLenum pname,
+                                            const GLfloat *params)
+{
+    return ValidateGetVertexAttribBase(context, entryPoint, index, pname, nullptr, false);
+}
+
+ANGLE_INLINE bool ValidateGetVertexAttribiv(const Context *context,
+                                            angle::EntryPoint entryPoint,
+                                            GLuint index,
+                                            GLenum pname,
+                                            const GLint *params)
+{
+    return ValidateGetVertexAttribBase(context, entryPoint, index, pname, nullptr, false);
+}
+
+ANGLE_INLINE bool ValidateGetVertexAttribPointerv(const Context *context,
+                                                  angle::EntryPoint entryPoint,
+                                                  GLuint index,
+                                                  GLenum pname,
+                                                  void *const *pointer)
+{
+    return ValidateGetVertexAttribBase(context, entryPoint, index, pname, nullptr, true);
+}
+
+ANGLE_INLINE bool ValidateReadPixels(const Context *context,
+                                     angle::EntryPoint entryPoint,
+                                     GLint x,
+                                     GLint y,
                                      GLsizei width,
                                      GLsizei height,
                                      GLenum format,
-                                     GLsizei imageSize,
-                                     const void *data);
-bool ValidateCompressedTexImage2DRobustANGLE(Context *context,
-                                             GLenum target,
-                                             GLint level,
-                                             GLenum internalformat,
-                                             GLsizei width,
-                                             GLsizei height,
-                                             GLint border,
-                                             GLsizei imageSize,
-                                             GLsizei dataSize,
-                                             const void *data);
-bool ValidateCompressedTexSubImage2DRobustANGLE(Context *context,
-                                                GLenum target,
-                                                GLint level,
-                                                GLint xoffset,
-                                                GLint yoffset,
-                                                GLsizei width,
-                                                GLsizei height,
-                                                GLenum format,
-                                                GLsizei imageSize,
-                                                GLsizei dataSize,
-                                                const void *data);
+                                     GLenum type,
+                                     const void *pixels)
+{
+    return ValidateReadPixelsBase(context, entryPoint, x, y, width, height, format, type, -1,
+                                  nullptr, nullptr, nullptr, pixels);
+}
 
-bool ValidateBindTexture(Context *context, GLenum target, GLuint texture);
-
-bool ValidateGetBufferPointervOES(Context *context, GLenum target, GLenum pname, void **params);
-bool ValidateMapBufferOES(Context *context, GLenum target, GLenum access);
-bool ValidateUnmapBufferOES(Context *context, GLenum target);
-bool ValidateMapBufferRangeEXT(Context *context,
-                               GLenum target,
-                               GLintptr offset,
-                               GLsizeiptr length,
-                               GLbitfield access);
-bool ValidateFlushMappedBufferRangeEXT(Context *context,
-                                       GLenum target,
-                                       GLintptr offset,
-                                       GLsizeiptr length);
-
-bool ValidateBindUniformLocationCHROMIUM(Context *context,
-                                         GLuint program,
-                                         GLint location,
-                                         const GLchar *name);
-
-bool ValidateCoverageModulationCHROMIUM(Context *context, GLenum components);
-
-// CHROMIUM_path_rendering
-bool ValidateMatrix(Context *context, GLenum matrixMode, const GLfloat *matrix);
-bool ValidateMatrixMode(Context *context, GLenum matrixMode);
-bool ValidateGenPaths(Context *context, GLsizei range);
-bool ValidateDeletePaths(Context *context, GLuint first, GLsizei range);
-bool ValidatePathCommands(Context *context,
-                          GLuint path,
-                          GLsizei numCommands,
-                          const GLubyte *commands,
-                          GLsizei numCoords,
-                          GLenum coordType,
-                          const void *coords);
-bool ValidateSetPathParameter(Context *context, GLuint path, GLenum pname, GLfloat value);
-bool ValidateGetPathParameter(Context *context, GLuint path, GLenum pname, GLfloat *value);
-bool ValidatePathStencilFunc(Context *context, GLenum func, GLint ref, GLuint mask);
-bool ValidateStencilFillPath(Context *context, GLuint path, GLenum fillMode, GLuint mask);
-bool ValidateStencilStrokePath(Context *context, GLuint path, GLint reference, GLuint mask);
-bool ValidateCoverPath(Context *context, GLuint path, GLenum coverMode);
-bool ValidateStencilThenCoverFillPath(Context *context,
-                                      GLuint path,
-                                      GLenum fillMode,
-                                      GLuint mask,
-                                      GLenum coverMode);
-bool ValidateStencilThenCoverStrokePath(Context *context,
-                                        GLuint path,
-                                        GLint reference,
-                                        GLuint mask,
-                                        GLenum coverMode);
-bool ValidateIsPath(Context *context);
-bool ValidateCoverFillPathInstanced(Context *context,
-                                    GLsizei numPaths,
-                                    GLenum pathNameType,
-                                    const void *paths,
-                                    GLuint pathBase,
-                                    GLenum coverMode,
-                                    GLenum transformType,
-                                    const GLfloat *transformValues);
-bool ValidateCoverStrokePathInstanced(Context *context,
-                                      GLsizei numPaths,
-                                      GLenum pathNameType,
-                                      const void *paths,
-                                      GLuint pathBase,
-                                      GLenum coverMode,
-                                      GLenum transformType,
-                                      const GLfloat *transformValues);
-bool ValidateStencilFillPathInstanced(Context *context,
-                                      GLsizei numPaths,
-                                      GLenum pathNameType,
-                                      const void *paths,
-                                      GLuint pathBAse,
-                                      GLenum fillMode,
-                                      GLuint mask,
-                                      GLenum transformType,
-                                      const GLfloat *transformValues);
-bool ValidateStencilStrokePathInstanced(Context *context,
-                                        GLsizei numPaths,
-                                        GLenum pathNameType,
-                                        const void *paths,
-                                        GLuint pathBase,
-                                        GLint reference,
-                                        GLuint mask,
-                                        GLenum transformType,
-                                        const GLfloat *transformValues);
-bool ValidateStencilThenCoverFillPathInstanced(Context *context,
-                                               GLsizei numPaths,
-                                               GLenum pathNameType,
-                                               const void *paths,
-                                               GLuint pathBase,
-                                               GLenum fillMode,
-                                               GLuint mask,
-                                               GLenum coverMode,
-                                               GLenum transformType,
-                                               const GLfloat *transformValues);
-bool ValidateStencilThenCoverStrokePathInstanced(Context *context,
-                                                 GLsizei numPaths,
-                                                 GLenum pathNameType,
-                                                 const void *paths,
-                                                 GLuint pathBase,
-                                                 GLint reference,
-                                                 GLuint mask,
-                                                 GLenum coverMode,
-                                                 GLenum transformType,
-                                                 const GLfloat *transformValues);
-bool ValidateBindFragmentInputLocation(Context *context,
-                                       GLuint program,
-                                       GLint location,
-                                       const GLchar *name);
-bool ValidateProgramPathFragmentInputGen(Context *context,
-                                         GLuint program,
-                                         GLint location,
-                                         GLenum genMode,
-                                         GLint components,
-                                         const GLfloat *coeffs);
-
-bool ValidateCopyTextureCHROMIUM(Context *context,
-                                 GLuint sourceId,
-                                 GLint sourceLevel,
-                                 GLenum destTarget,
-                                 GLuint destId,
-                                 GLint destLevel,
-                                 GLint internalFormat,
-                                 GLenum destType,
-                                 GLboolean unpackFlipY,
-                                 GLboolean unpackPremultiplyAlpha,
-                                 GLboolean unpackUnmultiplyAlpha);
-bool ValidateCopySubTextureCHROMIUM(Context *context,
-                                    GLuint sourceId,
-                                    GLint sourceLevel,
-                                    GLenum destTarget,
-                                    GLuint destId,
-                                    GLint destLevel,
-                                    GLint xoffset,
-                                    GLint yoffset,
-                                    GLint x,
-                                    GLint y,
-                                    GLsizei width,
-                                    GLsizei height,
-                                    GLboolean unpackFlipY,
-                                    GLboolean unpackPremultiplyAlpha,
-                                    GLboolean unpackUnmultiplyAlpha);
-bool ValidateCompressedCopyTextureCHROMIUM(Context *context, GLuint sourceId, GLuint destId);
-
-bool ValidateCreateShader(Context *context, GLenum type);
-bool ValidateBufferData(ValidationContext *context,
-                        GLenum target,
-                        GLsizeiptr size,
-                        const void *data,
-                        GLenum usage);
-bool ValidateBufferSubData(ValidationContext *context,
-                           GLenum target,
-                           GLintptr offset,
-                           GLsizeiptr size,
-                           const void *data);
-
-bool ValidateRequestExtensionANGLE(ValidationContext *context, const GLchar *name);
-
-bool ValidateActiveTexture(ValidationContext *context, GLenum texture);
-bool ValidateAttachShader(ValidationContext *context, GLuint program, GLuint shader);
-bool ValidateBindAttribLocation(ValidationContext *context,
-                                GLuint program,
-                                GLuint index,
-                                const GLchar *name);
-bool ValidateBindBuffer(ValidationContext *context, GLenum target, GLuint buffer);
-bool ValidateBindFramebuffer(ValidationContext *context, GLenum target, GLuint framebuffer);
-bool ValidateBindRenderbuffer(ValidationContext *context, GLenum target, GLuint renderbuffer);
-bool ValidateBlendColor(ValidationContext *context,
-                        GLclampf red,
-                        GLclampf green,
-                        GLclampf blue,
-                        GLclampf alpha);
-bool ValidateBlendEquation(ValidationContext *context, GLenum mode);
-bool ValidateBlendEquationSeparate(ValidationContext *context, GLenum modeRGB, GLenum modeAlpha);
-bool ValidateBlendFunc(ValidationContext *context, GLenum sfactor, GLenum dfactor);
-bool ValidateBlendFuncSeparate(ValidationContext *context,
-                               GLenum srcRGB,
-                               GLenum dstRGB,
-                               GLenum srcAlpha,
-                               GLenum dstAlpha);
-
-bool ValidateGetString(Context *context, GLenum name);
-bool ValidateLineWidth(ValidationContext *context, GLfloat width);
-bool ValidateVertexAttribPointer(ValidationContext *context,
-                                 GLuint index,
-                                 GLint size,
-                                 GLenum type,
-                                 GLboolean normalized,
-                                 GLsizei stride,
-                                 const void *ptr);
-
-bool ValidateDepthRangef(ValidationContext *context, GLclampf zNear, GLclampf zFar);
-bool ValidateRenderbufferStorage(ValidationContext *context,
-                                 GLenum target,
-                                 GLenum internalformat,
-                                 GLsizei width,
-                                 GLsizei height);
-bool ValidateRenderbufferStorageMultisampleANGLE(ValidationContext *context,
-                                                 GLenum target,
-                                                 GLsizei samples,
-                                                 GLenum internalformat,
-                                                 GLsizei width,
-                                                 GLsizei height);
-
-bool ValidateCheckFramebufferStatus(ValidationContext *context, GLenum target);
-bool ValidateClearColor(ValidationContext *context,
-                        GLclampf red,
-                        GLclampf green,
-                        GLclampf blue,
-                        GLclampf alpha);
-bool ValidateClearDepthf(ValidationContext *context, GLclampf depth);
-bool ValidateClearStencil(ValidationContext *context, GLint s);
-bool ValidateColorMask(ValidationContext *context,
-                       GLboolean red,
-                       GLboolean green,
-                       GLboolean blue,
-                       GLboolean alpha);
-bool ValidateCompileShader(ValidationContext *context, GLuint shader);
-bool ValidateCreateProgram(ValidationContext *context);
-bool ValidateCullFace(ValidationContext *context, GLenum mode);
-bool ValidateDeleteProgram(ValidationContext *context, GLuint program);
-bool ValidateDeleteShader(ValidationContext *context, GLuint shader);
-bool ValidateDepthFunc(ValidationContext *context, GLenum func);
-bool ValidateDepthMask(ValidationContext *context, GLboolean flag);
-bool ValidateDetachShader(ValidationContext *context, GLuint program, GLuint shader);
-bool ValidateDisableVertexAttribArray(ValidationContext *context, GLuint index);
-bool ValidateEnableVertexAttribArray(ValidationContext *context, GLuint index);
-bool ValidateFinish(ValidationContext *context);
-bool ValidateFlush(ValidationContext *context);
-bool ValidateFrontFace(ValidationContext *context, GLenum mode);
-bool ValidateGetActiveAttrib(ValidationContext *context,
-                             GLuint program,
-                             GLuint index,
-                             GLsizei bufsize,
-                             GLsizei *length,
-                             GLint *size,
-                             GLenum *type,
-                             GLchar *name);
-bool ValidateGetActiveUniform(ValidationContext *context,
-                              GLuint program,
-                              GLuint index,
-                              GLsizei bufsize,
-                              GLsizei *length,
-                              GLint *size,
-                              GLenum *type,
-                              GLchar *name);
-bool ValidateGetAttachedShaders(ValidationContext *context,
-                                GLuint program,
-                                GLsizei maxcount,
-                                GLsizei *count,
-                                GLuint *shaders);
-bool ValidateGetAttribLocation(ValidationContext *context, GLuint program, const GLchar *name);
-bool ValidateGetBooleanv(ValidationContext *context, GLenum pname, GLboolean *params);
-bool ValidateGetError(ValidationContext *context);
-bool ValidateGetFloatv(ValidationContext *context, GLenum pname, GLfloat *params);
-bool ValidateGetIntegerv(ValidationContext *context, GLenum pname, GLint *params);
-bool ValidateGetProgramInfoLog(ValidationContext *context,
-                               GLuint program,
-                               GLsizei bufsize,
-                               GLsizei *length,
-                               GLchar *infolog);
-bool ValidateGetShaderInfoLog(ValidationContext *context,
-                              GLuint shader,
-                              GLsizei bufsize,
-                              GLsizei *length,
-                              GLchar *infolog);
-bool ValidateGetShaderPrecisionFormat(ValidationContext *context,
-                                      GLenum shadertype,
-                                      GLenum precisiontype,
-                                      GLint *range,
-                                      GLint *precision);
-bool ValidateGetShaderSource(ValidationContext *context,
-                             GLuint shader,
-                             GLsizei bufsize,
-                             GLsizei *length,
-                             GLchar *source);
-bool ValidateGetUniformLocation(ValidationContext *context, GLuint program, const GLchar *name);
-bool ValidateHint(ValidationContext *context, GLenum target, GLenum mode);
-bool ValidateIsBuffer(ValidationContext *context, GLuint buffer);
-bool ValidateIsFramebuffer(ValidationContext *context, GLuint framebuffer);
-bool ValidateIsProgram(ValidationContext *context, GLuint program);
-bool ValidateIsRenderbuffer(ValidationContext *context, GLuint renderbuffer);
-bool ValidateIsShader(ValidationContext *context, GLuint shader);
-bool ValidateIsTexture(ValidationContext *context, GLuint texture);
-bool ValidatePixelStorei(ValidationContext *context, GLenum pname, GLint param);
-bool ValidatePolygonOffset(ValidationContext *context, GLfloat factor, GLfloat units);
-bool ValidateReleaseShaderCompiler(ValidationContext *context);
-bool ValidateSampleCoverage(ValidationContext *context, GLclampf value, GLboolean invert);
-bool ValidateScissor(ValidationContext *context, GLint x, GLint y, GLsizei width, GLsizei height);
-bool ValidateShaderBinary(ValidationContext *context,
-                          GLsizei n,
-                          const GLuint *shaders,
-                          GLenum binaryformat,
-                          const void *binary,
-                          GLsizei length);
-bool ValidateShaderSource(ValidationContext *context,
-                          GLuint shader,
-                          GLsizei count,
-                          const GLchar *const *string,
-                          const GLint *length);
-bool ValidateStencilFunc(ValidationContext *context, GLenum func, GLint ref, GLuint mask);
-bool ValidateStencilFuncSeparate(ValidationContext *context,
-                                 GLenum face,
-                                 GLenum func,
-                                 GLint ref,
-                                 GLuint mask);
-bool ValidateStencilMask(ValidationContext *context, GLuint mask);
-bool ValidateStencilMaskSeparate(ValidationContext *context, GLenum face, GLuint mask);
-bool ValidateStencilOp(ValidationContext *context, GLenum fail, GLenum zfail, GLenum zpass);
-bool ValidateStencilOpSeparate(ValidationContext *context,
-                               GLenum face,
-                               GLenum fail,
-                               GLenum zfail,
-                               GLenum zpass);
-bool ValidateUniform1f(ValidationContext *context, GLint location, GLfloat x);
-bool ValidateUniform1fv(ValidationContext *context,
-                        GLint location,
-                        GLsizei count,
-                        const GLfloat *v);
-bool ValidateUniform1i(ValidationContext *context, GLint location, GLint x);
-bool ValidateUniform2f(ValidationContext *context, GLint location, GLfloat x, GLfloat y);
-bool ValidateUniform2fv(ValidationContext *context,
-                        GLint location,
-                        GLsizei count,
-                        const GLfloat *v);
-bool ValidateUniform2i(ValidationContext *context, GLint location, GLint x, GLint y);
-bool ValidateUniform2iv(ValidationContext *context, GLint location, GLsizei count, const GLint *v);
-bool ValidateUniform3f(ValidationContext *context, GLint location, GLfloat x, GLfloat y, GLfloat z);
-bool ValidateUniform3fv(ValidationContext *context,
-                        GLint location,
-                        GLsizei count,
-                        const GLfloat *v);
-bool ValidateUniform3i(ValidationContext *context, GLint location, GLint x, GLint y, GLint z);
-bool ValidateUniform3iv(ValidationContext *context, GLint location, GLsizei count, const GLint *v);
-bool ValidateUniform4f(ValidationContext *context,
-                       GLint location,
-                       GLfloat x,
-                       GLfloat y,
-                       GLfloat z,
-                       GLfloat w);
-bool ValidateUniform4fv(ValidationContext *context,
-                        GLint location,
-                        GLsizei count,
-                        const GLfloat *v);
-bool ValidateUniform4i(ValidationContext *context,
-                       GLint location,
-                       GLint x,
-                       GLint y,
-                       GLint z,
-                       GLint w);
-bool ValidateUniform4iv(ValidationContext *context, GLint location, GLsizei count, const GLint *v);
-bool ValidateUniformMatrix2fv(ValidationContext *context,
-                              GLint location,
-                              GLsizei count,
-                              GLboolean transpose,
-                              const GLfloat *value);
-bool ValidateUniformMatrix3fv(ValidationContext *context,
-                              GLint location,
-                              GLsizei count,
-                              GLboolean transpose,
-                              const GLfloat *value);
-bool ValidateUniformMatrix4fv(ValidationContext *context,
-                              GLint location,
-                              GLsizei count,
-                              GLboolean transpose,
-                              const GLfloat *value);
-bool ValidateValidateProgram(ValidationContext *context, GLuint program);
-bool ValidateVertexAttrib1f(ValidationContext *context, GLuint index, GLfloat x);
-bool ValidateVertexAttrib1fv(ValidationContext *context, GLuint index, const GLfloat *values);
-bool ValidateVertexAttrib2f(ValidationContext *context, GLuint index, GLfloat x, GLfloat y);
-bool ValidateVertexAttrib2fv(ValidationContext *context, GLuint index, const GLfloat *values);
-bool ValidateVertexAttrib3f(ValidationContext *context,
-                            GLuint index,
-                            GLfloat x,
-                            GLfloat y,
-                            GLfloat z);
-bool ValidateVertexAttrib3fv(ValidationContext *context, GLuint index, const GLfloat *values);
-bool ValidateVertexAttrib4f(ValidationContext *context,
-                            GLuint index,
-                            GLfloat x,
-                            GLfloat y,
-                            GLfloat z,
-                            GLfloat w);
-bool ValidateVertexAttrib4fv(ValidationContext *context, GLuint index, const GLfloat *values);
-bool ValidateViewport(ValidationContext *context, GLint x, GLint y, GLsizei width, GLsizei height);
-bool ValidateDrawElements(ValidationContext *context,
-                          GLenum mode,
-                          GLsizei count,
-                          GLenum type,
-                          const void *indices);
-
-bool ValidateDrawArrays(ValidationContext *context, GLenum mode, GLint first, GLsizei count);
-
-bool ValidateGetFramebufferAttachmentParameteriv(ValidationContext *context,
-                                                 GLenum target,
-                                                 GLenum attachment,
-                                                 GLenum pname,
-                                                 GLint *params);
-bool ValidateGetProgramiv(ValidationContext *context, GLuint program, GLenum pname, GLint *params);
-
-bool ValidateCopyTexImage2D(ValidationContext *context,
-                            GLenum target,
-                            GLint level,
-                            GLenum internalformat,
-                            GLint x,
-                            GLint y,
-                            GLsizei width,
-                            GLsizei height,
-                            GLint border);
-
-bool ValidateCopyTexSubImage2D(Context *context,
-                               GLenum target,
-                               GLint level,
-                               GLint xoffset,
-                               GLint yoffset,
-                               GLint x,
-                               GLint y,
-                               GLsizei width,
-                               GLsizei height);
-
-bool ValidateDeleteBuffers(Context *context, GLint n, const GLuint *buffers);
-bool ValidateDeleteFramebuffers(Context *context, GLint n, const GLuint *framebuffers);
-bool ValidateDeleteRenderbuffers(Context *context, GLint n, const GLuint *renderbuffers);
-bool ValidateDeleteTextures(Context *context, GLint n, const GLuint *textures);
-bool ValidateDisable(Context *context, GLenum cap);
-bool ValidateEnable(Context *context, GLenum cap);
-bool ValidateFramebufferRenderbuffer(Context *context,
-                                     GLenum target,
-                                     GLenum attachment,
-                                     GLenum renderbuffertarget,
-                                     GLuint renderbuffer);
-bool ValidateFramebufferTexture2D(Context *context,
-                                  GLenum target,
-                                  GLenum attachment,
-                                  GLenum textarget,
-                                  GLuint texture,
-                                  GLint level);
-bool ValidateGenBuffers(Context *context, GLint n, GLuint *buffers);
-bool ValidateGenerateMipmap(Context *context, GLenum target);
-bool ValidateGenFramebuffers(Context *context, GLint n, GLuint *framebuffers);
-bool ValidateGenRenderbuffers(Context *context, GLint n, GLuint *renderbuffers);
-bool ValidateGenTextures(Context *context, GLint n, GLuint *textures);
-bool ValidateGetBufferParameteriv(ValidationContext *context,
-                                  GLenum target,
-                                  GLenum pname,
-                                  GLint *params);
-bool ValidateGetRenderbufferParameteriv(Context *context,
-                                        GLenum target,
+ANGLE_INLINE bool ValidateTexParameterf(const Context *context,
+                                        angle::EntryPoint entryPoint,
+                                        TextureType target,
                                         GLenum pname,
-                                        GLint *params);
-bool ValidateGetShaderiv(Context *context, GLuint shader, GLenum pname, GLint *params);
-bool ValidateGetTexParameterfv(Context *context, GLenum target, GLenum pname, GLfloat *params);
-bool ValidateGetTexParameteriv(Context *context, GLenum target, GLenum pname, GLint *params);
-bool ValidateGetUniformfv(Context *context, GLuint program, GLint location, GLfloat *params);
-bool ValidateGetUniformiv(Context *context, GLuint program, GLint location, GLint *params);
-bool ValidateGetVertexAttribfv(Context *context, GLuint index, GLenum pname, GLfloat *params);
-bool ValidateGetVertexAttribiv(Context *context, GLuint index, GLenum pname, GLint *params);
-bool ValidateGetVertexAttribPointerv(Context *context, GLuint index, GLenum pname, void **pointer);
-bool ValidateIsEnabled(Context *context, GLenum cap);
-bool ValidateLinkProgram(Context *context, GLuint program);
-bool ValidateReadPixels(Context *context,
-                        GLint x,
-                        GLint y,
-                        GLsizei width,
-                        GLsizei height,
-                        GLenum format,
-                        GLenum type,
-                        void *pixels);
-bool ValidateTexParameterf(Context *context, GLenum target, GLenum pname, GLfloat param);
-bool ValidateTexParameterfv(Context *context, GLenum target, GLenum pname, const GLfloat *params);
-bool ValidateTexParameteri(Context *context, GLenum target, GLenum pname, GLint param);
-bool ValidateTexParameteriv(Context *context, GLenum target, GLenum pname, const GLint *params);
-bool ValidateUniform1iv(ValidationContext *context,
-                        GLint location,
-                        GLsizei count,
-                        const GLint *value);
-bool ValidateUseProgram(Context *context, GLuint program);
+                                        GLfloat param)
+{
+    return ValidateTexParameterBase(context, entryPoint, target, pname, -1, false, &param);
+}
+
+ANGLE_INLINE bool ValidateTexParameterfv(const Context *context,
+                                         angle::EntryPoint entryPoint,
+                                         TextureType target,
+                                         GLenum pname,
+                                         const GLfloat *params)
+{
+    return ValidateTexParameterBase(context, entryPoint, target, pname, -1, true, params);
+}
+
+ANGLE_INLINE bool ValidateTexParameteri(const Context *context,
+                                        angle::EntryPoint entryPoint,
+                                        TextureType target,
+                                        GLenum pname,
+                                        GLint param)
+{
+    return ValidateTexParameterBase(context, entryPoint, target, pname, -1, false, &param);
+}
+
+ANGLE_INLINE bool ValidateTexParameteriv(const Context *context,
+                                         angle::EntryPoint entryPoint,
+                                         TextureType target,
+                                         GLenum pname,
+                                         const GLint *params)
+{
+    return ValidateTexParameterBase(context, entryPoint, target, pname, -1, true, params);
+}
+
+ANGLE_INLINE bool ValidateBindBuffer(const Context *context,
+                                     angle::EntryPoint entryPoint,
+                                     BufferBinding target,
+                                     BufferID buffer)
+{
+    if (!context->isValidBufferBinding(target))
+    {
+        ANGLE_VALIDATION_ERROR(GL_INVALID_ENUM, err::kInvalidBufferTypes);
+        return false;
+    }
+
+    if (!context->getState().isBindGeneratesResourceEnabled() &&
+        !context->isBufferGenerated(buffer))
+    {
+        ANGLE_VALIDATION_ERROR(GL_INVALID_OPERATION, err::kObjectNotGenerated);
+        return false;
+    }
+
+    return true;
+}
+
+ANGLE_INLINE bool ValidateDrawElements(const Context *context,
+                                       angle::EntryPoint entryPoint,
+                                       PrimitiveMode mode,
+                                       GLsizei count,
+                                       DrawElementsType type,
+                                       const void *indices)
+{
+    return ValidateDrawElementsCommon(context, entryPoint, mode, count, type, indices, 1);
+}
+
+ANGLE_INLINE bool ValidateVertexAttribPointer(const Context *context,
+                                              angle::EntryPoint entryPoint,
+                                              GLuint index,
+                                              GLint size,
+                                              VertexAttribType type,
+                                              GLboolean normalized,
+                                              GLsizei stride,
+                                              const void *ptr)
+{
+    if (!ValidateFloatVertexFormat(context, entryPoint, index, size, type))
+    {
+        return false;
+    }
+
+    if (stride < 0)
+    {
+        ANGLE_VALIDATION_ERROR(GL_INVALID_VALUE, err::kNegativeStride);
+        return false;
+    }
+
+    if (context->getClientVersion() >= ES_3_1)
+    {
+        const Caps &caps = context->getCaps();
+        if (stride > caps.maxVertexAttribStride)
+        {
+            ANGLE_VALIDATION_ERROR(GL_INVALID_VALUE, err::kExceedsMaxVertexAttribStride);
+            return false;
+        }
+
+        if (index >= static_cast<GLuint>(caps.maxVertexAttribBindings))
+        {
+            ANGLE_VALIDATION_ERROR(GL_INVALID_VALUE, err::kExceedsMaxVertexAttribBindings);
+            return false;
+        }
+    }
+
+    // [OpenGL ES 3.0.2] Section 2.8 page 24:
+    // An INVALID_OPERATION error is generated when a non-zero vertex array object
+    // is bound, zero is bound to the ARRAY_BUFFER buffer object binding point,
+    // and the pointer argument is not NULL.
+    bool nullBufferAllowed = context->getState().areClientArraysEnabled() &&
+                             context->getState().getVertexArray()->id().value == 0;
+    if (!nullBufferAllowed && context->getState().getTargetBuffer(BufferBinding::Array) == 0 &&
+        ptr != nullptr)
+    {
+        ANGLE_VALIDATION_ERROR(GL_INVALID_OPERATION, err::kClientDataInVertexArray);
+        return false;
+    }
+
+    if (context->isWebGL())
+    {
+        // WebGL 1.0 [Section 6.14] Fixed point support
+        // The WebGL API does not support the GL_FIXED data type.
+        if (type == VertexAttribType::Fixed)
+        {
+            ANGLE_VALIDATION_ERROR(GL_INVALID_ENUM, err::kFixedNotInWebGL);
+            return false;
+        }
+
+        if (!ValidateWebGLVertexAttribPointer(context, entryPoint, type, normalized, stride, ptr,
+                                              false))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void RecordBindTextureTypeError(const Context *context,
+                                angle::EntryPoint entryPoint,
+                                TextureType target);
+
+ANGLE_INLINE bool ValidateBindTexture(const Context *context,
+                                      angle::EntryPoint entryPoint,
+                                      TextureType target,
+                                      TextureID texture)
+{
+    if (!context->getStateCache().isValidBindTextureType(target))
+    {
+        RecordBindTextureTypeError(context, entryPoint, target);
+        return false;
+    }
+
+    if (texture.value == 0)
+    {
+        return true;
+    }
+
+    Texture *textureObject = context->getTexture(texture);
+    if (textureObject && textureObject->getType() != target)
+    {
+        ANGLE_VALIDATION_ERRORF(GL_INVALID_OPERATION, err::kTextureTargetMismatchWithLabel,
+                                static_cast<uint8_t>(target),
+                                static_cast<uint8_t>(textureObject->getType()),
+                                textureObject->getLabel().c_str());
+        return false;
+    }
+
+    if (!context->getState().isBindGeneratesResourceEnabled() &&
+        !context->isTextureGenerated(texture))
+    {
+        ANGLE_VALIDATION_ERROR(GL_INVALID_OPERATION, err::kObjectNotGenerated);
+        return false;
+    }
+
+    return true;
+}
+
+// Validation of all Tex[Sub]Image2D parameters except TextureTarget.
+bool ValidateES2TexImageParametersBase(const Context *context,
+                                       angle::EntryPoint entryPoint,
+                                       TextureTarget target,
+                                       GLint level,
+                                       GLenum internalformat,
+                                       bool isCompressed,
+                                       bool isSubImage,
+                                       GLint xoffset,
+                                       GLint yoffset,
+                                       GLsizei width,
+                                       GLsizei height,
+                                       GLint border,
+                                       GLenum format,
+                                       GLenum type,
+                                       GLsizei imageSize,
+                                       const void *pixels);
+
+// Validation of TexStorage*2DEXT
+bool ValidateES2TexStorageParametersBase(const Context *context,
+                                         angle::EntryPoint entryPoint,
+                                         TextureType target,
+                                         GLsizei levels,
+                                         GLenum internalformat,
+                                         GLsizei width,
+                                         GLsizei height);
+
+// Validation of [Push,Pop]DebugGroup
+bool ValidatePushDebugGroupBase(const Context *context,
+                                angle::EntryPoint entryPoint,
+                                GLenum source,
+                                GLuint id,
+                                GLsizei length,
+                                const GLchar *message);
+bool ValidatePopDebugGroupBase(const Context *context, angle::EntryPoint entryPoint);
+
+bool ValidateDebugMessageControlBase(const Context *context,
+                                     angle::EntryPoint entryPoint,
+                                     GLenum source,
+                                     GLenum type,
+                                     GLenum severity,
+                                     GLsizei count,
+                                     const GLuint *ids);
+
+bool ValidateDebugMessageInsertBase(const Context *context,
+                                    angle::EntryPoint entryPoint,
+                                    GLenum source,
+                                    GLenum type,
+                                    GLuint id,
+                                    GLenum severity,
+                                    GLsizei length,
+                                    const GLchar *buf);
+
+bool ValidateGetDebugMessageLogBase(const Context *context,
+                                    angle::EntryPoint entryPoint,
+                                    GLuint count,
+                                    GLsizei bufSize,
+                                    const GLenum *sources,
+                                    const GLenum *types,
+                                    const GLuint *ids,
+                                    const GLenum *severities,
+                                    const GLsizei *lengths,
+                                    const GLchar *messageLog);
+
+// Validation of ObjectLabel
+bool ValidateObjectLabelBase(const Context *context,
+                             angle::EntryPoint entryPoint,
+                             GLenum identifier,
+                             GLuint name,
+                             GLsizei length,
+                             const GLchar *label);
+
+// Validation of GetObjectLabel
+bool ValidateGetObjectLabelBase(const Context *context,
+                                angle::EntryPoint entryPoint,
+                                GLenum identifier,
+                                GLuint name,
+                                GLsizei bufSize,
+                                const GLsizei *length,
+                                const GLchar *label);
+
+// Validation of ObjectPtrLabel
+bool ValidateObjectPtrLabelBase(const Context *context,
+                                angle::EntryPoint entryPoint,
+                                const void *ptr,
+                                GLsizei length,
+                                const GLchar *label);
+
+// Validation of GetObjectPtrLabel
+bool ValidateGetObjectPtrLabelBase(const Context *context,
+                                   angle::EntryPoint entryPoint,
+                                   const void *ptr,
+                                   GLsizei bufSize,
+                                   const GLsizei *length,
+                                   const GLchar *label);
 
 }  // namespace gl
 

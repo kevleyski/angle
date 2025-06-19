@@ -1,169 +1,175 @@
 //
-// Copyright (c) 2010-2013 The ANGLE Project Authors. All rights reserved.
+// Copyright 2010 The ANGLE Project Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
 
 #include "libANGLE/Uniform.h"
-
-#include "common/utilities.h"
+#include "common/BinaryStream.h"
+#include "libANGLE/ProgramLinkedResources.h"
 
 #include <cstring>
 
 namespace gl
 {
 
-LinkedUniform::LinkedUniform()
-    : bufferIndex(-1), blockInfo(sh::BlockMemberInfo::getDefaultBlockInfo())
-{
-}
-
 LinkedUniform::LinkedUniform(GLenum typeIn,
                              GLenum precisionIn,
-                             const std::string &nameIn,
-                             unsigned int arraySizeIn,
+                             const std::vector<unsigned int> &arraySizesIn,
                              const int bindingIn,
                              const int offsetIn,
                              const int locationIn,
                              const int bufferIndexIn,
                              const sh::BlockMemberInfo &blockInfoIn)
-    : bufferIndex(bufferIndexIn), blockInfo(blockInfoIn)
 {
-    type      = typeIn;
-    precision = precisionIn;
-    name      = nameIn;
-    arraySize = arraySizeIn;
-    binding   = bindingIn;
-    offset    = offsetIn;
-    location  = locationIn;
-}
+    // arrays are always flattened, which means at most 1D array
+    ASSERT(arraySizesIn.size() <= 1);
 
-LinkedUniform::LinkedUniform(const sh::Uniform &uniform)
-    : sh::Uniform(uniform), bufferIndex(-1), blockInfo(sh::BlockMemberInfo::getDefaultBlockInfo())
-{
-}
-
-LinkedUniform::LinkedUniform(const LinkedUniform &uniform)
-    : sh::Uniform(uniform), bufferIndex(uniform.bufferIndex), blockInfo(uniform.blockInfo)
-{
-    // This function is not intended to be called during runtime.
-    ASSERT(uniform.mLazyData.empty());
-}
-
-LinkedUniform &LinkedUniform::operator=(const LinkedUniform &uniform)
-{
-    // This function is not intended to be called during runtime.
-    ASSERT(uniform.mLazyData.empty());
-
-    sh::Uniform::operator=(uniform);
-    bufferIndex          = uniform.bufferIndex;
-    blockInfo            = uniform.blockInfo;
-
-    return *this;
-}
-
-LinkedUniform::~LinkedUniform()
-{
-}
-
-bool LinkedUniform::isInDefaultBlock() const
-{
-    return bufferIndex == -1;
-}
-
-size_t LinkedUniform::dataSize() const
-{
-    ASSERT(type != GL_STRUCT_ANGLEX);
-    if (mLazyData.empty())
+    memset(this, 0, sizeof(*this));
+    pod.typeIndex = GetUniformTypeIndex(typeIn);
+    SetBitField(pod.precision, precisionIn);
+    pod.location = locationIn;
+    SetBitField(pod.binding, bindingIn);
+    SetBitField(pod.offset, offsetIn);
+    SetBitField(pod.bufferIndex, bufferIndexIn);
+    pod.outerArraySizeProduct = 1;
+    SetBitField(pod.arraySize, arraySizesIn.empty() ? 1u : arraySizesIn[0]);
+    SetBitField(pod.flagBits.isArray, !arraySizesIn.empty());
+    if (!(blockInfoIn == sh::kDefaultBlockMemberInfo))
     {
-        mLazyData.resize(VariableExternalSize(type) * elementCount());
-        ASSERT(!mLazyData.empty());
+        pod.flagBits.isBlock               = 1;
+        pod.flagBits.blockIsRowMajorMatrix = blockInfoIn.isRowMajorMatrix;
+        SetBitField(pod.blockOffset, blockInfoIn.offset);
+        SetBitField(pod.blockArrayStride, blockInfoIn.arrayStride);
+        SetBitField(pod.blockMatrixStride, blockInfoIn.matrixStride);
     }
-
-    return mLazyData.size();
 }
 
-const uint8_t *LinkedUniform::data() const
+LinkedUniform::LinkedUniform(const UsedUniform &usedUniform)
 {
-    return const_cast<LinkedUniform *>(this)->data();
+    ASSERT(!usedUniform.isArrayOfArrays());
+    ASSERT(!usedUniform.isStruct());
+    ASSERT(usedUniform.active);
+    ASSERT(usedUniform.blockInfo == sh::kDefaultBlockMemberInfo);
+
+    // Note: Ensure every data member is initialized.
+    pod.flagBitsAsUByte = 0;
+    pod.typeIndex       = GetUniformTypeIndex(usedUniform.type);
+    SetBitField(pod.precision, usedUniform.precision);
+    SetBitField(pod.imageUnitFormat, usedUniform.imageUnitFormat);
+    pod.location          = usedUniform.location;
+    pod.blockOffset       = 0;
+    pod.blockArrayStride  = 0;
+    pod.blockMatrixStride = 0;
+    SetBitField(pod.binding, usedUniform.binding);
+    SetBitField(pod.offset, usedUniform.offset);
+
+    SetBitField(pod.bufferIndex, usedUniform.bufferIndex);
+    SetBitField(pod.parentArrayIndex, usedUniform.parentArrayIndex());
+    SetBitField(pod.outerArraySizeProduct, ArraySizeProduct(usedUniform.outerArraySizes));
+    SetBitField(pod.outerArrayOffset, usedUniform.outerArrayOffset);
+    SetBitField(pod.arraySize, usedUniform.isArray() ? usedUniform.getArraySizeProduct() : 1u);
+    SetBitField(pod.flagBits.isArray, usedUniform.isArray());
+
+    pod.id            = usedUniform.id;
+    pod.activeUseBits = usedUniform.activeVariable.activeShaders();
+    pod.ids           = usedUniform.activeVariable.getIds();
+
+    SetBitField(pod.flagBits.isFragmentInOut, usedUniform.isFragmentInOut);
+    SetBitField(pod.flagBits.texelFetchStaticUse, usedUniform.texelFetchStaticUse);
+    ASSERT(!usedUniform.isArray() || pod.arraySize == usedUniform.getArraySizeProduct());
 }
 
-bool LinkedUniform::isSampler() const
+BufferVariable::BufferVariable()
 {
-    return IsSamplerType(type);
+    memset(&pod, 0, sizeof(pod));
+    pod.bufferIndex       = -1;
+    pod.blockInfo         = sh::kDefaultBlockMemberInfo;
+    pod.topLevelArraySize = -1;
 }
 
-bool LinkedUniform::isImage() const
+BufferVariable::BufferVariable(GLenum type,
+                               GLenum precision,
+                               const std::string &name,
+                               const std::vector<unsigned int> &arraySizes,
+                               const int bufferIndex,
+                               int topLevelArraySize,
+                               const sh::BlockMemberInfo &blockInfo)
+    : name(name)
 {
-    return IsImageType(type);
+    memset(&pod, 0, sizeof(pod));
+    SetBitField(pod.type, type);
+    SetBitField(pod.precision, precision);
+    SetBitField(pod.bufferIndex, bufferIndex);
+    pod.blockInfo = blockInfo;
+    SetBitField(pod.topLevelArraySize, topLevelArraySize);
+    pod.isArray = !arraySizes.empty();
+    SetBitField(pod.basicTypeElementCount, arraySizes.empty() ? 1u : arraySizes.back());
 }
 
-bool LinkedUniform::isAtomicCounter() const
+AtomicCounterBuffer::AtomicCounterBuffer()
 {
-    return IsAtomicCounterType(type);
+    memset(&pod, 0, sizeof(pod));
 }
 
-bool LinkedUniform::isField() const
+void AtomicCounterBuffer::unionReferencesWith(const LinkedUniform &other)
 {
-    return name.find('.') != std::string::npos;
+    pod.activeUseBits |= other.pod.activeUseBits;
+    for (const ShaderType shaderType : AllShaderTypes())
+    {
+        ASSERT(pod.ids[shaderType] == 0 || other.getId(shaderType) == 0 ||
+               pod.ids[shaderType] == other.getId(shaderType));
+        if (pod.ids[shaderType] == 0)
+        {
+            pod.ids[shaderType] = other.getId(shaderType);
+        }
+    }
 }
 
-size_t LinkedUniform::getElementSize() const
+InterfaceBlock::InterfaceBlock()
 {
-    return VariableExternalSize(type);
+    memset(&pod, 0, sizeof(pod));
 }
 
-size_t LinkedUniform::getElementComponents() const
+InterfaceBlock::InterfaceBlock(const std::string &name,
+                               const std::string &mappedName,
+                               bool isArray,
+                               bool isReadOnly,
+                               unsigned int arrayElementIn,
+                               unsigned int firstFieldArraySizeIn,
+                               int binding)
+    : name(name), mappedName(mappedName)
 {
-    return VariableComponentCount(type);
+    memset(&pod, 0, sizeof(pod));
+
+    SetBitField(pod.isArray, isArray);
+    SetBitField(pod.isReadOnly, isReadOnly);
+    SetBitField(pod.inShaderBinding, binding);
+    pod.arrayElement        = arrayElementIn;
+    pod.firstFieldArraySize = firstFieldArraySizeIn;
 }
 
-uint8_t *LinkedUniform::getDataPtrToElement(size_t elementIndex)
-{
-    ASSERT((!isArray() && elementIndex == 0) || (isArray() && elementIndex < arraySize));
-    return data() + (elementIndex > 0 ? (getElementSize() * elementIndex) : 0u);
-}
-
-const uint8_t *LinkedUniform::getDataPtrToElement(size_t elementIndex) const
-{
-    return const_cast<LinkedUniform *>(this)->getDataPtrToElement(elementIndex);
-}
-
-ShaderVariableBuffer::ShaderVariableBuffer()
-    : binding(0),
-      dataSize(0),
-      vertexStaticUse(false),
-      fragmentStaticUse(false),
-      computeStaticUse(false)
-{
-}
-
-ShaderVariableBuffer::~ShaderVariableBuffer()
-{
-}
-
-UniformBlock::UniformBlock() : isArray(false), arrayElement(0)
-{
-}
-
-UniformBlock::UniformBlock(const std::string &nameIn,
-                           bool isArrayIn,
-                           unsigned int arrayElementIn,
-                           int bindingIn)
-    : name(nameIn), isArray(isArrayIn), arrayElement(arrayElementIn)
-{
-    binding = bindingIn;
-}
-
-std::string UniformBlock::nameWithArrayIndex() const
+std::string InterfaceBlock::nameWithArrayIndex() const
 {
     std::stringstream fullNameStr;
     fullNameStr << name;
-    if (isArray)
+    if (pod.isArray)
     {
-        fullNameStr << "[" << arrayElement << "]";
+        fullNameStr << "[" << pod.arrayElement << "]";
     }
 
     return fullNameStr.str();
 }
+
+std::string InterfaceBlock::mappedNameWithArrayIndex() const
+{
+    std::stringstream fullNameStr;
+    fullNameStr << mappedName;
+    if (pod.isArray)
+    {
+        fullNameStr << "[" << pod.arrayElement << "]";
+    }
+
+    return fullNameStr.str();
 }
+}  // namespace gl

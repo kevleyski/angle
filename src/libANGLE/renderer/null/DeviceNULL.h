@@ -21,10 +21,11 @@ class DeviceNULL : public DeviceImpl
     DeviceNULL();
     ~DeviceNULL() override;
 
-    egl::Error getDevice(void **outValue) override;
-    EGLint getType() override;
+    egl::Error initialize() override;
+    egl::Error getAttribute(const egl::Display *display,
+                            EGLint attribute,
+                            void **outValue) override;
     void generateExtensions(egl::DeviceExtensions *outExtensions) const override;
-    bool deviceExternallySourced() override;
 };
 
 }  // namespace rx
